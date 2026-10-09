@@ -44,7 +44,11 @@ EVENT_COLUMNS = ["game_id", "play_id", "kind", "event", "att_team", "def_team", 
                  "weight", "boom", "havoc"]
 COACH_DISCLAIMER = COACHING_DOC.split("\n\n")[1].replace("\n", " ")
 STATIC_TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
-                ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml"}
+                ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png",
+                ".ico": "image/x-icon", ".webmanifest": "application/manifest+json"}
+# Browsers and iOS ask for these at the site root.
+ROOT_FILES = {"favicon.ico": "favicon.ico", "apple-touch-icon.png": "apple-touch-icon.png",
+              "apple-touch-icon-precomposed.png": "apple-touch-icon.png"}
 
 
 @dataclass
@@ -477,6 +481,8 @@ def make_handler(state: State):
                     return self.send(200, (WEB / "index.html").read_bytes(), STATIC_TYPES[".html"])
                 if parts[0] == "static" and len(parts) == 2 and self.static(parts[1]):
                     return
+                if len(parts) == 1 and parts[0] in ROOT_FILES and self.static(ROOT_FILES[parts[0]]):
+                    return
                 if parts[0] != "api":
                     return self.json({"error": "not found"}, 404)
                 if parts[1:] == ["status"]:
@@ -538,6 +544,8 @@ def make_admin_handler(state: State, password: str | None):
             if not parts:
                 return self.send(200, (WEB / "admin.html").read_bytes(), STATIC_TYPES[".html"])
             if parts[0] == "static" and len(parts) == 2 and self.static(parts[1]):
+                return
+            if len(parts) == 1 and parts[0] in ROOT_FILES and self.static(ROOT_FILES[parts[0]]):
                 return
             if parts == ["api", "settings"]:
                 return self.json({"settings": state.settings.to_dict(), "defaults": Settings().to_dict(),

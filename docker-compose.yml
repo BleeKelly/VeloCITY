@@ -19,6 +19,10 @@ services:
       # Parquet cache (raw/), CSV output (output/) and settings.json. Set VELOCITY_DATA in .env on a server.
       - ${VELOCITY_DATA:-./store}:/data
     command: ["velocity", "serve", "--host", "0.0.0.0", "--rebuild-hours", "6", "12"]
+    labels:
+      # Icon and WebUI link in Unraid's Docker tab (other hosts ignore these).
+      net.unraid.docker.icon: "https://raw.githubusercontent.com/BleeKelly/VeloCITY/main/src/velocity/web/icon-512.png"
+      net.unraid.docker.webui: "http://[IP]:[PORT:8097]/"
 
   # Optional: checks the registry and restarts `velocity` when a new image is published.
   # Turn on with COMPOSE_PROFILES=auto-update. Needs the Docker socket, but only ever touches

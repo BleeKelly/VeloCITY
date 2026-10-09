@@ -1,0 +1,13 @@
+{
+  "name": "VeloCITY",
+  "short_name": "VeloCITY",
+  "description": "Play-by-play Elo and V-City for the NFL",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f6eddf",
+  "theme_color": "#8a5530",
+  "icons": [
+    { "src": "/static/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/static/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
