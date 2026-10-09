@@ -477,7 +477,7 @@ def make_handler(state: State):
             q = {k: v[0] for k, v in parse_qs(url.query).items()}
             parts = [p for p in url.path.split("/") if p]
             try:
-                if not parts or parts[0] in ("team", "game", "games", "season", "rules", "chart"):
+                if not parts or parts[0] in ("team", "game", "games", "season", "rules", "chart", "glossary"):
                     return self.send(200, (WEB / "index.html").read_bytes(), STATIC_TYPES[".html"])
                 if parts[0] == "static" and len(parts) == 2 and self.static(parts[1]):
                     return

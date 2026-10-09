@@ -974,6 +974,107 @@ function viewRules(app) {
   document.title = "Rules · VeloCITY";
 }
 
+// Glossary entries: [term, definition]. Definitions can be functions of the current settings and
+// metrics so the numbers always match what the ratings actually use.
+function glossarySections(sm) {
+  const r = sm.settings.rules, m = sm.settings.model, met = sm.metrics.all;
+  const pct = (x) => `${Math.round(x * 100)}%`;
+  return [
+    ["The basics", [
+      ["Play", "Every run, pass, punt and field goal is a one-play game between an offense and a defense. Penalties, two-point tries and timeouts go to the coaching rating instead."],
+      ["Win / tie / loss (W / T / L)", "The offense's result on a play under the scoring rules (see the Rules page). A win is worth 1, a tie ½, a loss 0. Defenses get the opposite."],
+      ["Elo", "A rating system from chess: do better than expected and your rating rises, worse and it falls. Here every play is a game, so ratings move a little on every snap."],
+      ["Chance to win the play", "Before each snap, how likely the offense is to win the play, from both teams' ratings, the down and distance, and home field. It's the split bar on game pages."],
+      ["Situational baseline", "What an average offense achieves in that spot (down & distance, plus field position for V-City). Ratings measure play above that, so a 3rd-and-15 stop isn't treated like a 1st-and-10 stop."],
+      ["Home field", `A small per-play edge for the home offense, learned from the data (about ${met.hfa_elo.toFixed(1)} Elo per play). None at neutral sites.`],
+    ]],
+    ["Ratings", [
+      ["Offense / Defense rating", "Elo for each unit. Everyone starts at 1500, so the league average sits near 1500."],
+      ["Net", "Offense plus defense, each measured above the league average. The headline rating on the board."],
+      ["Spread", `Net rating turned into points: how much better than an average team on a neutral field (about ${met.pts_per_100_elo.toFixed(0)} points per 100 Elo). On the board +7 means 7 points better; on game cards it's written like a betting line, so −4.5 means favored by 4.5.`],
+      ["Off / Def win %", "Share of plays won this season, ties counting half. Raw numbers, not adjusted for opponents; the ratings are."],
+      ["Rank", "Position among the 32 teams for that rating (1st is best)."],
+      ["Pregame chance", "The chance a team wins a game, from the ratings going into it and home field."],
+      ["Picks the winner", `How often the higher-rated team (counting home field) won, since ${met.from_season}: ${met.game_pick_pct.toFixed(1)}%. Always picking the home team wins ${met.home_win_pct.toFixed(1)}%.`],
+      ["Coaching staff rating ⚠", "Elo for each team's staff, from penalties, two-point tries and early timeouts. Disclaimer: it will suck. Players commit the penalties and these events are a thin slice of coaching."],
+      ["Head coach", "The current head coach from ESPN (nflverse's coach names can lag a change)."],
+    ]],
+    ["V-City", [
+      ["V-City", "Volatile Chunks & Impressive Turnovers, Y'know. The second rating, for the boom-or-bust plays Elo can't see. Rated the same way as Elo: opponent-adjusted and against what the situation predicts."],
+      ["Big plays", `Offensive V-City. Credit starts at ${r.boom.start} yards and is full at ${r.boom.full}+, plus ${r.boom.td_bonus} for a touchdown from outside the red zone. A gain that ends in a turnover doesn't count. Defenses are rated on preventing big plays.`],
+      ["Havoc", `Defensive V-City: sacks (more for big losses, ×${r.havoc.late_down} on 3rd and 4th down), tackles for loss, takeaways (more in the backfield and with long returns), return touchdowns and safeties. Offenses are rated on avoiding havoc.`],
+      ["Net V-City", "Big plays and havoc created, minus big plays and havoc allowed."],
+      ["Boom or bust", "A team that wins fewer plays than expected but makes up for it with big plays: low Elo, high V-City."],
+    ]],
+    ["How ratings move", [
+      ["K", `The most a rating can move on one event: ${m.k} per play (times the play's weight), ${m.k_vcity} per V-City play, ${m.k_coach} per coaching event.`],
+      ["Weights (×1.5, ×2)", `Plays that matter more move ratings more: red-zone snaps ×${r.weights.red_zone}, goal to go ×${r.weights.goal_to_go}, field-goal attempts ×${r.weights.field_goal}. Set by the situation before the snap, never the result.`],
+      ["Off-season pull", `Between seasons, ratings are pulled part of the way back toward 1500: offense and defense ${pct(m.season_regression)}, coaching ${pct(m.coach_regression)}, V-City ${pct(m.vcity_regression)}.`],
+      ["Decay / carryover", m.decay
+        ? "Since 2014 each team's off-season pull depends on what changed: returning snaps, lineup age and a new head coach. Team pages show how much of each rating carried over (\"kept\")."
+        : "Team-specific decay is off: every team gets the same off-season pull."],
+      ["Full history / This season only", "Full history carries ratings across seasons. This season only restarts every team at 1500 each season, so it shows the current year on its own."],
+      ["Garbage time", `Plays when the offense's chance to win the game is below ${pct(m.garbage_wp[0])} or above ${pct(m.garbage_wp[1])}. The No garbage time toggle drops them.`],
+      ["Provisional / live", "Ratings from games in progress, scored from ESPN's live feed. They're replaced by the official nflverse data after the game."],
+    ]],
+    ["Charts", [
+      ["Rating swing", "On a game page: net Elo moving between the two teams, play by play. It's zero-sum, so it's one line; up is the home team gaining."],
+      ["Play swing / Staff swing", "The net Elo (or coaching Elo) one team took from the other in that game."],
+      ["Elo × V-City", "Every team on two axes, with quadrants at league average. Offense: offensive Elo vs big plays. Defense: defensive Elo vs havoc. Net: net Elo vs net V-City. Click a team to trace its season."],
+      ["Quadrants", "Offense: Explosive & efficient, Grinders (consistent, few big plays), Boom or bust, Struggling. Defense: Dominant, Disciplined (steady stops, little havoc), Feast or famine (havoc but inconsistent), Struggling. Net: Contenders, Grinders, Boom or bust, Rebuilding."],
+      ["Season path", "On the Elo × V-City charts, click a team to draw its position after every game that season."],
+      ["Small multiples", "The Seasons page: every team's net rating through one season, each in its own small chart on a shared scale."],
+    ]],
+    ["Symbols & badges", [
+      ["🏆 / 🥈", "Super Bowl champion / runner-up. Gold and silver rows, rings and outlines mark the same thing."],
+      ["💥", "A big play: at least a quarter of full big-play credit."],
+      ["⚡", "Havoc: a sack, tackle for loss or takeaway worth at least a quarter of full credit."],
+      ["×1.5 / ×2", "A weighted play (red zone, goal to go or field goal)."],
+      ["LIVE", "A game in progress. Its ratings are provisional."],
+      ["Upset", "The team with the lower pregame chance won."],
+      ["⚠", "The coaching rating. See the disclaimer."],
+    ]],
+    ["Data", [
+      ["nflverse", "Official play-by-play back to 1999, plus snap counts and rosters for decay. Rebuilt every morning in season."],
+      ["ESPN", "Live plays during games, team colors and logos, and current head coaches."],
+    ]],
+  ];
+}
+
+const slug = (t) => t.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "symbol";
+
+function viewGlossary(app) {
+  setNav("glossary");
+  const sections = glossarySections(store.summary);
+  const body = h("div", { class: "glossary" });
+  const filter = h("input", { type: "search", class: "select glossary-filter", placeholder: "Filter terms…", "aria-label": "Filter glossary terms" });
+
+  function draw() {
+    const q = filter.value.trim().toLowerCase();
+    const cards = sections.map(([title, entries]) => {
+      const shown = entries.filter(([term, def]) => !q || term.toLowerCase().includes(q) || def.toLowerCase().includes(q));
+      if (!shown.length) return null;
+      return h("section", { class: "card" }, h("h2", {}, title),
+        h("dl", { class: "glossary-list" }, shown.flatMap(([term, def]) => [
+          h("dt", { id: slug(term) }, h("a", { href: `#${slug(term)}`, class: "anchor", "aria-label": `Link to ${term}` }, "#"), term),
+          h("dd", {}, def)])));
+    }).filter(Boolean);
+    body.replaceChildren(...(cards.length ? cards : [h("div", { class: "empty" }, "No terms match.")]));
+  }
+  filter.addEventListener("input", draw);
+  draw();
+  app.replaceChildren(
+    h("div", { class: "page-head" },
+      h("div", {}, h("h1", {}, "Glossary"), h("div", { class: "sub" }, "What every number, chart and badge on VeloCITY means. Numbers here follow the current settings.")),
+      h("div", { class: "head-tools" }, filter)),
+    body);
+  document.title = "Glossary · VeloCITY";
+  if (location.hash) {
+    const target = document.getElementById(location.hash.slice(1));
+    if (target) requestAnimationFrame(() => target.scrollIntoView({ block: "center" }));
+  }
+}
+
 function viewPreview(app, g) {
   app.replaceChildren(
     h("div", { class: "card", style: { marginTop: "18px" } },
@@ -1009,6 +1110,7 @@ async function render(opts = {}) {
     else if (parts[0] === "season") await viewSeason(app, parts[1] ? +parts[1] : null);
     else if (parts[0] === "rules") viewRules(app);
     else if (parts[0] === "chart") await viewChart(app, url.searchParams);
+    else if (parts[0] === "glossary") viewGlossary(app);
     else { viewRatings(app, url.searchParams); document.title = "VeloCITY"; }
     if (opts.keepScroll) scrollTo(0, scroll); else if (!opts.soft) scrollTo(0, 0);
   } catch (e) {

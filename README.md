@@ -128,8 +128,9 @@ time), team pages (ratings over time for any single season or 5/10/all years, ga
 off-season carryover, coaching chart), Seasons (all 32 teams as small multiples on one scale),
 games by week with pregame chances, every game play by play with each side's chance to win
 the play, the result, weighted plays and big-play/havoc markers, and a zero-sum rating swing
-chart, the Elo × V-City charts for any season, and a Rules page showing the scoring rules
-currently in effect. Live games update every ~45 s.
+chart, the Elo × V-City charts for any season, a Rules page showing the scoring rules
+currently in effect, and a Glossary of every term, chart and badge (filterable, with links to each
+entry, and numbers that follow the current settings). Live games update every ~45 s.
 
 JSON API: `/api/summary`, `/api/team/{abbr}?variant=`, `/api/season/{year}?variant=`,
 `/api/games?season=&week=`, `/api/game/{game_id}`, `/api/widget`, `/api/status`.

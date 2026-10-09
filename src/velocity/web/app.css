@@ -316,8 +316,8 @@ td.rank { color: var(--muted); width: 32px; font-variant-numeric: tabular-nums; 
 @media (max-width: 1080px) {
   .topbar { gap: 12px; }
   .nav a { padding: 6px 9px; }
-  .pill .long { display: none; }
-  .pill .short { display: inline; }
+  .topbar .pill .long { display: none; }
+  .topbar .pill .short { display: inline; }
 }
 @media (max-width: 900px) {
   .topbar { flex-wrap: wrap; row-gap: 6px; }
@@ -447,3 +447,15 @@ tr.runner-up td:first-child { box-shadow: inset 3px 0 0 var(--silver); }
 .v-mark { margin-left: 3px; font-size: 13px; vertical-align: middle; cursor: help; }
 .plays td.res { width: auto; white-space: nowrap; }
 .mini-h { font-size: 13px; font-weight: 700; color: var(--ink-2); margin: 16px 0 0; text-transform: uppercase; letter-spacing: 0.05em; }
+
+/* ---- glossary ---- */
+.glossary { columns: 2 420px; column-gap: 16px; }
+.glossary .card { break-inside: avoid; display: inline-block; width: 100%; }
+.glossary-list { margin: 8px 0 0; }
+.glossary-list dt { font-weight: 650; margin-top: 12px; scroll-margin-top: 90px; position: relative; }
+.glossary-list dt:first-child { margin-top: 0; }
+.glossary-list dt:target { color: var(--accent); }
+.glossary-list dd { margin: 3px 0 0; color: var(--ink-2); font-size: 14px; }
+.glossary-list .anchor { position: absolute; left: -14px; color: var(--muted); opacity: 0; text-decoration: none; font-weight: 400; }
+.glossary-list dt:hover .anchor, .glossary-list dt:target .anchor { opacity: 1; }
+.glossary-filter { width: 240px; max-width: 100%; }
