@@ -52,14 +52,21 @@ COACH_DISCLAIMER = COACHING_DOC.split("\n\n")[1].replace("\n", " ")
 STATIC_TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
                 ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png",
                 ".ico": "image/x-icon", ".webmanifest": "application/manifest+json"}
-# Cache-Control policies, written for a CDN (Cloudflare) in front of the public site.
-CACHE_IMMUTABLE = "public, max-age=31536000, immutable"       # URL changes when content does (?v=, ?r=)
-CACHE_ASSET = "public, max-age=86400, stale-while-revalidate=604800"  # icons, logo, manifest
-CACHE_SCRIPT = "public, max-age=300"                          # an unversioned app.js/app.css request
-CACHE_PAGE = "public, max-age=0, s-maxage=300, stale-while-revalidate=600"  # the HTML shell
-CACHE_LIVE = "public, max-age=15, s-maxage=30, stale-while-revalidate=30"   # summary, live data
-CACHE_MISS = "public, max-age=0, s-maxage=60"                 # 404s and bad requests
-NO_STORE = "no-store"                                         # admin, and "still building"
+# Cache-Control policies, written for a CDN (Cloudflare) in front of the public site. Set the CDN's
+# browser cache TTL to respect these headers. stale-if-error lets it keep serving while the origin is down.
+DAY = 86400
+CACHE_IMMUTABLE = "public, max-age=31536000, immutable"   # URL changes when content does (?v=, ?r=)
+CACHE_ASSET = (f"public, max-age={7 * DAY}, s-maxage={30 * DAY}, stale-while-revalidate={30 * DAY}, "
+               f"stale-if-error={30 * DAY}")               # unversioned icons browsers ask for at the root
+CACHE_SCRIPT = "public, max-age=300"                      # an unversioned app.js/app.css request
+CACHE_PAGE = (f"public, max-age=0, s-maxage=300, stale-while-revalidate={DAY}, "
+              f"stale-if-error={7 * DAY}")                 # the HTML shell: new deploys show within minutes
+CACHE_LIVE = "public, max-age=15, s-maxage=30, stale-while-revalidate=30, stale-if-error=3600"  # games on
+CACHE_IDLE = f"public, max-age=60, s-maxage=300, stale-while-revalidate=600, stale-if-error={DAY}"  # no games on
+CACHE_OVERLAY = f"public, max-age=3600, s-maxage={DAY}, stale-if-error={7 * DAY}"  # overlay/public (robots.txt…)
+CACHE_MISS = "public, max-age=0, s-maxage=60"             # 404s and bad requests
+NO_STORE = "no-store"                                     # admin, and "still building"
+LIVE_SOON = 15 * 60  # seconds before kickoff when the summary switches to the short live policy
 
 # Links to the other leagues' sites, e.g. VELOCITY_SIBLINGS="NFL=https://nfl.example.com,NCAA=https://cfb.example.com"
 SIBLINGS = [{"label": k.strip(), "url": v.strip()} for k, _, v in
@@ -108,15 +115,33 @@ def overlay_file(name: str, sub: str = "") -> Path | None:
     return f if f.is_file() and f.suffix in OVERLAY_TYPES else None
 
 
+@lru_cache(maxsize=64)
+def file_version(name: str) -> str:
+    """Content hash of one web file (icons, logo, manifest)."""
+    return hashlib.sha1((WEB / name).read_bytes()).hexdigest()[:10]
+
+
+STATIC_LINK = re.compile(r'"/static/([\w.-]+)"')
+
+
+def version_static_links(text: str) -> str:
+    """Point every "/static/x" link at "/static/x?v=<hash>" so it can be cached for a year. Scripts and
+    styles share one version, so a page never mixes an old app.js with a new app.css."""
+    def tag(m: re.Match) -> str:
+        name = m.group(1)
+        if not (WEB / name).is_file():
+            return m.group(0)
+        v = asset_version() if name.endswith((".js", ".css")) else file_version(name)
+        return f'"/static/{name}?v={v}"'
+    return STATIC_LINK.sub(tag, text)
+
+
 def page(name: str, overlay: bool = False) -> bytes:
-    """An HTML page with versioned links to its scripts and styles.
+    """An HTML page with versioned links to everything it loads from /static/.
 
     With `overlay`, the local overlay's head.html and body.html go just before </head> and </body>.
     """
-    html = (WEB / name).read_text()
-    v = asset_version()
-    for asset in ("app.css", "app.js", "admin.js"):
-        html = html.replace(f'"/static/{asset}"', f'"/static/{asset}?v={v}"')
+    html = version_static_links((WEB / name).read_text())
     if overlay:
         for slot, marker in (("head.html", "</head>"), ("body.html", "</body>")):
             if f := overlay_file(slot):
@@ -208,6 +233,7 @@ class State:
         self._sample: pd.DataFrame | None = None
         self.public_port: int | None = None
         self.revision = "0"  # changes only when ratings data changes: a rebuild or new live plays
+        self.build_revision = "0"  # changes only on a rebuild: for data live games can't touch
         self._live_print = None
 
         self.snap: dict[str, Snapshot] = {}
@@ -298,6 +324,7 @@ class State:
                 self.champions = champions
                 self._live_print = None
                 self.revision = hashlib.sha1(f"{datetime.now().isoformat()}|{id(snap)}".encode()).hexdigest()[:12]
+                self.build_revision = self.revision
                 self.status.update(built_at=datetime.now(live.EASTERN).isoformat(timespec="seconds"), error=None)
             print(f"rebuilt through {snap['all'].games.iloc[-1]['game_id']}")
             self.refresh_live()
@@ -368,6 +395,20 @@ class State:
 
     # ---- views ----------------------------------------------------------------------------
 
+    def live_soon(self) -> bool:
+        """A game in progress or kicking off within LIVE_SOON seconds."""
+        now = datetime.now(live.EASTERN)
+        for g in self.scoreboard:
+            if g["state"] == "in":
+                return True
+            if g["state"] == "pre":
+                try:
+                    if (datetime.fromisoformat(g["kickoff"]) - now).total_seconds() < LIVE_SOON:
+                        return True
+                except (KeyError, TypeError, ValueError):
+                    return True
+        return False
+
     def ratings_now(self, variant: str) -> np.ndarray:
         """Ratings per slot including live games, shape (teams, units)."""
         snap = self.snap[variant]
@@ -399,6 +440,7 @@ class State:
         return {
             "status": self.status | {"through": {"season": int(last["season"]), "week": int(last["week"])}},
             "revision": self.revision,
+            "build": self.build_revision,
             "metrics": {name: s.metrics for name, s in self.snap.items()},
             "labels": {name: s.label for name, s in self.snap.items()},
             "teams": self.teams_meta,
@@ -600,7 +642,10 @@ class BaseHandler(BaseHTTPRequestHandler):
         ext = "." + name.rsplit(".", 1)[-1]
         if "/" not in name and f.is_file() and ext in STATIC_TYPES:
             cache = CACHE_IMMUTABLE if versioned else CACHE_SCRIPT if ext in (".js", ".css") else CACHE_ASSET
-            self.send(200, f.read_bytes(), STATIC_TYPES[ext], cache=cache)
+            body = f.read_bytes()
+            if ext == ".webmanifest":  # its icon links get versions too
+                body = version_static_links(body.decode()).encode()
+            self.send(200, body, STATIC_TYPES[ext], cache=cache)
             return True
         return False
 
@@ -629,7 +674,7 @@ def make_handler(state: State):
                     cache = CACHE_IMMUTABLE if "v" in q else CACHE_SCRIPT if f.suffix in (".js", ".css") else CACHE_ASSET
                     return self.send(200, f.read_bytes(), OVERLAY_TYPES[f.suffix], cache=cache)
                 if len(parts) == 1 and (f := overlay_file(parts[0], "public")):
-                    return self.send(200, f.read_bytes(), OVERLAY_TYPES[f.suffix], cache="public, max-age=3600")
+                    return self.send(200, f.read_bytes(), OVERLAY_TYPES[f.suffix], cache=CACHE_OVERLAY)
                 if parts[0] not in ("api", "static", "local"):
                     # Unknown page: the app shows its own "not found" view.
                     return self.send(404, page("index.html", overlay=True), STATIC_TYPES[".html"], cache=CACHE_MISS)
@@ -645,7 +690,7 @@ def make_handler(state: State):
                 data_cache = CACHE_IMMUTABLE if q.get("r") else CACHE_LIVE
                 with state.lock:
                     if parts[1:] == ["summary"]:
-                        return self.json(finite(state.summary()), cache=CACHE_LIVE)
+                        return self.json(finite(state.summary()), cache=CACHE_LIVE if state.live_soon() else CACHE_IDLE)
                     if parts[1:] == ["widget"]:
                         return self.json(state.widget(), cache=CACHE_LIVE)
                     if len(parts) == 3 and parts[1] == "team":

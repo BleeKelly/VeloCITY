@@ -63,7 +63,7 @@ const cleanDesc = (d) => (d || "").replace(/^\(\s*:?\d*:?\d+\)\s*/, "");
 
 /* ---------- data ---------- */
 
-const store = { summary: null, variant: "all", scope: "history", conf: "", timers: [] };
+const store = { summary: null, variant: "all", scope: "history", conf: "", phase: "reg", timers: [] };
 // Rating set key on the server: all/ng (garbage time) + "_season" for this-season-only ratings.
 const setKey = () => store.variant + (store.scope === "season" ? "_season" : "");
 const toggles = (rerender) => [
@@ -71,10 +71,23 @@ const toggles = (rerender) => [
   seg([["all", "All plays"], ["ng", "No garbage time"]], store.variant, (v) => { store.variant = v; rerender(); }),
 ];
 
+// Data requests carry a revision so a CDN can cache them until they change. Anything live games can
+// touch uses the live revision (it moves with every new play); the rest only changes on a rebuild.
+function revisionFor(path) {
+  const sm = store.summary;
+  if (!sm || !/^\/api\/(team|season|games|game)\b/.test(path)) return null;
+  const build = sm.build || sm.revision;
+  if (path.startsWith("/api/season/")) return build;  // season views come from the rebuild only
+  const game = path.match(/^\/api\/game\/([^?]+)/);
+  if (game) return sm.scoreboard.some((g) => g.game_id === decodeURIComponent(game[1])) ? sm.revision : build;
+  const week = path.match(/^\/api\/games\?season=(\d+)/);
+  if (week && +week[1] < sm.status.through.season) return build;
+  return sm.revision;
+}
+
 async function api(path) {
-  // Data requests carry the data revision so a CDN can cache them until the ratings change.
-  const rev = store.summary && store.summary.revision;
-  if (rev && /^\/api\/(team|season|games|game)\b/.test(path)) path += `${path.includes("?") ? "&" : "?"}r=${rev}`;
+  const rev = revisionFor(path);
+  if (rev) path += `${path.includes("?") ? "&" : "?"}r=${rev}`;
   // Revisioned URLs never change; anything else (summary, status) is checked with the server every
   // time, even if a CDN stretched its browser cache lifetime.
   const res = await fetch(path, { headers: { Accept: "application/json" }, cache: /[?&]r=/.test(path) ? "default" : "no-cache" });
@@ -926,12 +939,27 @@ async function viewChart(app, params) {
   setNav("chart");
   const sm = store.summary;
   const season = +(params.get("season") || sm.status.through.season);
-  const data = await api(`/api/season/${season}?variant=${setKey()}`);
+  const raw = await api(`/api/season/${season}?variant=${setKey()}`);
+  // Where teams stood after the regular season, so non-playoff teams compare fairly with the ones that
+  // kept playing; the toggle adds the postseason games.
+  const hasPost = raw.teams.some((t) => t.points.some((p) => p.season_type === "POST"));
+  const regOnly = hasPost && store.phase === "reg";
+  const teams = raw.teams.map((t) => {
+    const pts = regOnly ? t.points.filter((p) => p.season_type !== "POST") : t.points;
+    if (!pts.length) return null;
+    const last = pts[pts.length - 1];
+    const count = (cmp) => pts.filter((p) => cmp(p.points_for, p.points_against)).length;
+    return { ...t, points: pts, net: last.net, off: last.off, def: last.def, v_off: last.v_off, v_def: last.v_def,
+      v_net: last.v_net, w: count((a, b) => a > b), l: count((a, b) => a < b), t: count((a, b) => a === b) };
+  }).filter(Boolean);
+  const data = { ...raw, teams };
   const byTeam = Object.fromEntries(data.teams.map((t) => [t.team, t]));
   const rankOf = (key) => {
     const sorted = [...data.teams].sort((a, b) => b[key] - a[key]);
     return Object.fromEntries(sorted.map((t, i) => [t.team, i + 1]));
   };
+  const phaseToggle = hasPost ? seg([["reg", "Regular season"], ["all", "With postseason"]], store.phase,
+    (v) => { store.phase = v; render({ keepScroll: true }); }) : null;
   const ring = (team) => (data.champion && data.champion.team === team ? "gold" : data.champion && data.champion.runner_up === team ? "silver" : null);
   const sel = h("select", { class: "select", "aria-label": "Season", onchange: (e) => go(`/chart?season=${e.target.value}`) },
     [...data.seasons].reverse().map((y) => h("option", { value: y, selected: y === data.season ? true : null }, y)));
@@ -965,8 +993,8 @@ async function viewChart(app, params) {
   app.replaceChildren(
     h("div", { class: "page-head" },
       h("div", {}, h("h1", {}, "Elo × V-City"),
-        h("div", { class: "sub" }, `Elo rewards consistency: winning down after down, sustained drives, stingy defense. V-City (${VCITY}) rewards the plays Elo can't see: big chunks on offense, sacks and takeaways on defense. Ratings after ${data.season === sm.status.through.season ? "the latest game" : `the ${data.season} season`}; 0 is league average. Gold and silver rings mark that season's ${titleGame()} teams.`)),
-      h("div", { class: "head-tools" }, confFilter(() => render({ keepScroll: true })), sel, toggles(() => render({ keepScroll: true })))),
+        h("div", { class: "sub" }, `Elo rewards consistency: winning down after down, sustained drives, stingy defense. V-City (${VCITY}) rewards the plays Elo can't see: big chunks on offense, sacks and takeaways on defense. Ratings after ${regOnly ? `the ${data.season} regular season` : data.season === sm.status.through.season ? "the latest game" : `the ${data.season} season`}; 0 is league average. Gold and silver rings mark that season's ${titleGame()} teams.`)),
+      h("div", { class: "head-tools" }, confFilter(() => render({ keepScroll: true })), sel, phaseToggle, toggles(() => render({ keepScroll: true })))),
     ...cards);
   document.title = `Elo × V-City ${data.season} · ${site()}`;
 }
@@ -1074,7 +1102,7 @@ function glossarySections(sm) {
     ["Charts", [
       ["Rating swing", "On a game page: net Elo moving between the two teams, play by play. It's zero-sum, so it's one line; up is the home team gaining."],
       ["Play swing / Staff swing", "The net Elo (or coaching Elo) one team took from the other in that game."],
-      ["Elo × V-City", "Every team on two axes, with quadrants at league average. Offense: offensive Elo vs big plays. Defense: defensive Elo vs havoc. Net: net Elo vs net V-City. Click a team to trace its season."],
+      ["Elo × V-City", "Every team on two axes, with quadrants at league average. Offense: offensive Elo vs big plays. Defense: defensive Elo vs havoc. Net: net Elo vs net V-City. Click a team to trace its season. Finished seasons show where teams stood after the regular season, so teams that missed the postseason compare fairly; \"With postseason\" adds the playoff (or bowl) games."],
       ["Quadrants", "Offense: Explosive & efficient, Grinders (consistent, few big plays), Boom or bust, Struggling. Defense: Dominant, Disciplined (steady stops, little havoc), Feast or famine (havoc but inconsistent), Struggling. Net: Contenders, Grinders, Boom or bust, Rebuilding."],
       ["Season path", "On the Elo × V-City charts, click a team to draw its position after every game that season."],
       ["Small multiples", "The Seasons page: every team's net rating through one season, each in its own small chart on a shared scale."],

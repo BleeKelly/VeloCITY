@@ -80,6 +80,9 @@ def test_pages_link_versioned_assets():
     v = asset_version()
     assert f'"/static/app.js?v={v}"' in html and f'"/static/app.css?v={v}"' in html
     assert f'"/static/admin.js?v={v}"' in page("admin.html").decode()
+    # icons, logo and manifest get their own content versions, so they can be cached for a year too
+    assert '"/static/logo.svg?v=' in html and '"/static/manifest.webmanifest?v=' in html
+    assert all("?v=" in link for link in html.split('"/static/')[1:])
 
 
 def test_public_http_cache_headers_and_overlay(built):
@@ -116,9 +119,24 @@ def test_public_http_cache_headers_and_overlay(built):
         assert get("/local/..%2Fsettings.json")[0] == 404
         assert get(f"/static/app.js?v={server.asset_version()}")[1]["Cache-Control"] == server.CACHE_IMMUTABLE
         assert get("/static/icon-512.png")[1]["Cache-Control"] == server.CACHE_ASSET
+        assert get("/static/icon-512.png?v=1")[1]["Cache-Control"] == server.CACHE_IMMUTABLE
+        assert b"/static/icon-192.png?v=" in get("/static/manifest.webmanifest")[2]
         code, h, body = get("/api/summary")
-        assert h["Cache-Control"] == server.CACHE_LIVE
+        assert h["Cache-Control"] == server.CACHE_IDLE  # no games on
+        from datetime import datetime, timedelta
+
+        soon = (datetime.now(server.live.EASTERN) + timedelta(minutes=10)).isoformat()
+        later = (datetime.now(server.live.EASTERN) + timedelta(hours=3)).isoformat()
+        assert not state.live_soon()
+        state.scoreboard = [{"state": "pre", "kickoff": later}]
+        assert not state.live_soon()
+        state.scoreboard = [{"state": "pre", "kickoff": soon}]
+        assert state.live_soon()  # switches the summary to CACHE_LIVE
+        state.scoreboard = [{"state": "in", "kickoff": later}]
+        assert state.live_soon()
+        state.scoreboard = []
         rev = json.loads(body)["revision"]
+        assert json.loads(body)["build"] == rev  # same until live plays move the live revision
         assert get(f"/api/team/BUF?r={rev}")[1]["Cache-Control"] == server.CACHE_IMMUTABLE
         assert get("/api/team/BUF")[1]["Cache-Control"] == server.CACHE_LIVE
         assert get("/robots.txt")[2] == b"robots ok"
