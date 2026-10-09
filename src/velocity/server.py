@@ -70,6 +70,20 @@ def records(df: pd.DataFrame, digits: int = 2) -> list[dict]:
     return out.astype(object).where(out.notna(), None).to_dict("records")
 
 
+def super_bowls(games: pd.DataFrame) -> dict[int, dict]:
+    """{season: {team, game_id}} from each finished season's last playoff game."""
+    post = games[games["season_type"] == "POST"].sort_values("game_date")
+    out = {}
+    for season, g in post.groupby("season"):
+        last = g.iloc[-1]
+        sb_week = 22 if season >= 2021 else 21
+        if season < data.current_season() or last["week"] == sb_week:
+            home_won = last["home_score"] > last["away_score"]
+            out[int(season)] = {"team": last["home_team"] if home_won else last["away_team"],
+                                "game_id": last["game_id"]}
+    return out
+
+
 def slim_events(events: Events, p: np.ndarray, delta: np.ndarray) -> pd.DataFrame:
     df = events.df[EVENT_COLUMNS].copy()
     df["p"], df["delta"] = p, delta
@@ -99,6 +113,7 @@ class State:
         self.summary_cache: dict[str, pd.DataFrame] = {}
         self.teams_meta: dict[str, dict] = {}
         self.coaches: dict[str, str] = {}
+        self.champions: dict[int, dict] = {}
         self.status = {"built_at": None, "live_at": None, "building": False, "error": None}
 
     # ---- settings -------------------------------------------------------------------------
@@ -168,8 +183,10 @@ class State:
                                       r.offseason, r.elo_cfg)
             del runs, events
 
+            champions = super_bowls(snap["all"].games)
             with self.lock:
                 self.snap = snap
+                self.champions = champions
                 self.status.update(built_at=datetime.now(live.EASTERN).isoformat(timespec="seconds"), error=None)
             print(f"rebuilt through {snap['all'].games.iloc[-1]['game_id']}")
             self.refresh_live()
@@ -272,6 +289,7 @@ class State:
             "first_season": data.FIRST_SEASON,
             "decay": self.decay_params is not None,
             "settings": self.settings.to_dict(),
+            "champions": self.champions,
             "coach_disclaimer": COACH_DISCLAIMER,
         }
 
@@ -391,7 +409,8 @@ class State:
                                      "points_against", "net", "off", "dfn"]].rename(columns={"dfn": "def"}), 1),
             })
         teams.sort(key=lambda t: -t["net"])
-        return {"season": year, "seasons": sorted(int(x) for x in snap.history["season"].unique()), "teams": teams}
+        return {"season": year, "seasons": sorted(int(x) for x in snap.history["season"].unique()), "teams": teams,
+                "champion": self.champions.get(year)}
 
     def widget(self) -> dict:
         """Compact numbers for dashboard widgets."""
