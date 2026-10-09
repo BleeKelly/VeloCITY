@@ -7,7 +7,7 @@ INTERVAL=${INTERVAL:-900}
 echo "auto-update: checking for a new velocity image every ${INTERVAL}s"
 while true; do
   before=$(docker inspect -f '{{.Image}}' velocity 2>/dev/null || true)
-  if docker compose pull --quiet velocity; then
+  if docker compose pull --quiet velocity >/dev/null 2>&1; then
     # `up` recreates the container only if the pulled image differs from the running one.
     docker compose up -d --no-build velocity >/dev/null 2>&1
     after=$(docker inspect -f '{{.Image}}' velocity 2>/dev/null || true)
