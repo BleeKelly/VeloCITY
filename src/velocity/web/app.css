@@ -122,7 +122,10 @@ button, select { font: inherit; color: inherit; }
 }
 .live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--bad); box-shadow: 0 0 0 0 var(--bad); animation: pulse 1.6s infinite; }
 @keyframes pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--bad) 60%, transparent); } 100% { box-shadow: 0 0 0 8px transparent; } }
-.icon-btn { border: 1px solid var(--border); background: var(--surface); border-radius: 999px; width: 34px; height: 34px; cursor: pointer; }
+.icon-btn { border: 1px solid var(--border); background: var(--surface); border-radius: 999px; width: 34px; height: 34px; cursor: pointer;
+  display: inline-grid; place-items: center; color: var(--ink-2); flex: 0 0 auto; }
+.icon-btn:hover { color: var(--ink); background: var(--surface-2); }
+.footer a { color: var(--ink-2); text-decoration: underline; text-underline-offset: 2px; }
 
 /* ---- slate (this week's games) ---- */
 .slate {
@@ -329,6 +332,7 @@ td.rank { color: var(--muted); width: 32px; font-variant-numeric: tabular-nums; 
 /* ---- phones ---- */
 .pill .short { display: none; }
 @media (max-width: 640px) {
+  .gh-link { display: none; }  /* no room on phones; the footer links to GitHub */
   .topbar { flex-wrap: wrap; gap: 8px 10px; padding-top: 8px; padding-bottom: 8px; }
   .nav { order: 3; width: 100%; }
   .nav .team-pick { margin-left: auto; }

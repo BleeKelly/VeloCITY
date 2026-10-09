@@ -1037,6 +1037,7 @@ function glossarySections(sm) {
     ["Data", [
       ["nflverse", "Official play-by-play back to 1999, plus snap counts and rosters for decay. Rebuilt every morning in season."],
       ["ESPN", "Live plays during games, team colors and logos, and current head coaches."],
+      ["Source code", "VeloCITY is open source: github.com/BleeKelly/VeloCITY (linked from the GitHub icon at the top and the page footer)."],
     ]],
   ];
 }
