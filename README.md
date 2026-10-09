@@ -86,12 +86,17 @@ JSON API: `/api/summary`, `/api/team/{abbr}?variant=`, `/api/season/{year}?varia
 ## Deploying to Isengard (Unraid)
 
 ```bash
-deploy/deploy.sh --seed-data
+deploy/deploy.sh               # pull ghcr.io/bleekelly/velocity:latest and restart
+deploy/deploy.sh --seed-data   # first time: also copy the local parquet cache
+deploy/deploy.sh --build       # build on Isengard from this checkout instead of pulling
 ```
 
-Copies the app to `/mnt/user/appdata/velocity/app`, seeds the parquet cache, and runs
-`docker compose up -d --build` (container `velocity`, port 8097, data in
-`/mnt/user/appdata/velocity/data`, runs as 99:100). Homepage tile:
+Puts the compose file and a `.env` (image + data path) in `/mnt/user/appdata/velocity/app`,
+then `docker compose pull && docker compose up -d` (container `velocity`, port 8097, data in
+`/mnt/user/appdata/velocity/data`, runs as 99:100). To update by hand on the server:
+`cd /mnt/user/appdata/velocity/app && docker compose pull && docker compose up -d`.
+The image is published by the Release workflow; if the GHCR package is private, run
+`docker login ghcr.io` once on Isengard (or make the package public). Homepage tile:
 
 ```yaml
 - VeloCITY:
