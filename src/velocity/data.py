@@ -9,9 +9,11 @@ from pathlib import Path
 import pandas as pd
 
 URL = "https://github.com/nflverse/nflverse-data/releases/download/{release}/{name}_{season}.parquet"
-HOME = Path(os.environ.get("VELOCITY_HOME", Path(__file__).resolve().parents[2]))
-DATA_DIR = HOME / "data" / "raw"
-OUTPUT_DIR = HOME / "output"
+# VELOCITY_STORE (the container's /data volume) holds raw/ and output/; otherwise use the repo.
+_STORE = os.environ.get("VELOCITY_STORE")
+_REPO = Path(__file__).resolve().parents[2]
+DATA_DIR = Path(_STORE) / "raw" if _STORE else _REPO / "data" / "raw"
+OUTPUT_DIR = Path(_STORE) / "output" if _STORE else _REPO / "output"
 FIRST_SEASON = 1999
 
 # The in-progress season's file is rebuilt nightly; re-download it once it's older than this.
