@@ -354,7 +354,8 @@ class State:
         teams.sort(key=lambda t: -t["net"])
         return {"season": year, "seasons": sorted(int(x) for x in snap.history["season"].unique()), "teams": teams}
 
-    def homepage(self) -> dict:
+    def widget(self) -> dict:
+        """Compact numbers for dashboard widgets."""
         t = self.snap["all"].table
         top = " · ".join(f"{i + 1}. {r.team} {r.net:+.0f}" for i, r in t.head(5).iterrows())
         return {"top5": top, "leader": t.iloc[0]["team"], "live": sum(g["state"] == "in" for g in self.scoreboard),
@@ -404,8 +405,8 @@ def make_handler(state: State):
                 with state.lock:
                     if parts[1:] == ["summary"]:
                         return self.json(state.summary())
-                    if parts[1:] == ["homepage"]:
-                        return self.json(state.homepage())
+                    if parts[1:] == ["widget"]:
+                        return self.json(state.widget())
                     if len(parts) == 3 and parts[1] == "team":
                         body = state.team(parts[2].upper(), variant)
                         return self.json(body) if body else self.json({"error": "unknown team"}, 404)

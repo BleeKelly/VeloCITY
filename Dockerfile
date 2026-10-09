@@ -18,5 +18,6 @@ EXPOSE 8097
 HEALTHCHECK --interval=60s --timeout=5s --start-period=10m \
   CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8097/api/status', timeout=4)"
 
+# Run unprivileged; compose sets the uid:gid (VELOCITY_USER) to match the data folder's owner.
 USER 1000:1000
 CMD ["velocity", "serve", "--host", "0.0.0.0", "--port", "8097"]
