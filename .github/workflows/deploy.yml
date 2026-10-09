@@ -1,0 +1,37 @@
+name: Deploy to Isengard
+
+# Pulls the new image on the home server over Tailscale after a release on main.
+# Off until the repo variable DEPLOY_ENABLED is "true" and these secrets exist:
+#   TS_OAUTH_CLIENT_ID / TS_OAUTH_SECRET  Tailscale OAuth client (tag:ci)
+#   DEPLOY_HOST                           Isengard's Tailscale IP or MagicDNS name
+#   DEPLOY_SSH_KEY                        private key whose public half is in root's authorized_keys
+on:
+  workflow_run:
+    workflows: ["Release image"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    if: vars.DEPLOY_ENABLED == 'true' && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+      - name: Pull and restart
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          IMAGE="ghcr.io/$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')/velocity:latest"  # GHCR names are lowercase
+          install -m 600 /dev/null ~/.ssh_key && printf '%s\n' "$SSH_KEY" > ~/.ssh_key
+          ssh -i ~/.ssh_key -o StrictHostKeyChecking=accept-new "root@$HOST" \
+            "cd /mnt/user/appdata/velocity/app && VELOCITY_IMAGE=$IMAGE VELOCITY_DATA=/mnt/user/appdata/velocity/data docker compose pull && VELOCITY_IMAGE=$IMAGE VELOCITY_DATA=/mnt/user/appdata/velocity/data docker compose up -d --no-build"

@@ -1,0 +1,10 @@
+.venv
+.pytest_cache
+**/__pycache__
+data
+output
+appdata
+tests
+deploy
+.claude
+uv.lock

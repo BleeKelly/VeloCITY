@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VeloCITY</title>
+  <link rel="icon" href="/static/logo.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/app.css">
+  <script>
+    try { const t = localStorage.getItem("theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
+  </script>
+</head>
+<body>
+  <header class="topbar">
+    <a href="/" class="brand" data-link>
+      <img class="brand-mark" src="/static/logo.svg" alt="" width="34" height="34">
+      <span class="wordmark" aria-label="VeloCITY">V<b>elo</b>CITY</span>
+    </a>
+    <nav class="nav">
+      <a href="/" data-link data-nav="ratings">Ratings</a>
+      <a href="/games" data-link data-nav="games">Games</a>
+      <a href="/season" data-link data-nav="season">Seasons</a>
+      <label class="team-pick">
+        <span class="sr-only">Jump to team</span>
+        <select id="team-select"><option value="">Teams</option></select>
+      </label>
+    </nav>
+    <div class="topbar-right">
+      <span id="status-pill" class="pill">Loading…</span>
+      <button id="theme-toggle" class="icon-btn" type="button" aria-label="Toggle light or dark theme">◐</button>
+    </div>
+  </header>
+  <section id="slate" class="slate" aria-label="This week's games"></section>
+  <main id="app" class="app" tabindex="-1"></main>
+  <div id="tooltip" class="tooltip" role="status" hidden></div>
+  <footer class="footer">
+    Every run, pass and punt is a one-play game between an offense and a defense. Data: nflverse play-by-play (nightly) and ESPN (live, provisional).
+  </footer>
+  <script src="/static/app.js"></script>
+</body>
+</html>

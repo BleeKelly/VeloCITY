@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "velocity",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": ["run", "velocity", "serve", "--port", "8097"],
+      "port": 8097
+    }
+  ]
+}
