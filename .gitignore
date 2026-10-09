@@ -6,3 +6,4 @@ data/
 output/
 store/
 deploy/deploy.env
+local/

@@ -3,6 +3,7 @@
 #   deploy/deploy.sh               pull the image GitHub Actions published (ghcr.io) and restart
 #   deploy/deploy.sh --build       build the image on the server from this checkout instead
 #   deploy/deploy.sh --seed-data   also copy the local nflverse parquet cache (skips a ~550 MB download)
+# Every run also syncs local/overlay/ (if present) to the server's data/overlay/.
 #
 # Server details come from deploy/deploy.env (gitignored) or the environment:
 #   VELOCITY_HOST=user@server  VELOCITY_DIR=/srv/velocity  [VELOCITY_USER=uid:gid]  [VELOCITY_IMAGE=...]
@@ -34,7 +35,7 @@ ssh "$HOST" "mkdir -p '$APP/app' '$APP/data/raw'"
 # `docker compose pull && docker compose up -d` in $APP/app works on the server too.
 rsync -a --delete \
   --exclude .venv --exclude .pytest_cache --exclude __pycache__ --exclude data --exclude output \
-  --exclude store --exclude .claude --exclude tests --exclude .git --exclude .github --exclude .ruff_cache \
+  --exclude store --exclude local --exclude .claude --exclude tests --exclude .git --exclude .github --exclude .ruff_cache \
   --exclude .env --exclude deploy.env \
   ./ "$HOST:$APP/app/"
 # Built locally and piped over, so values (like a password) never pass through a remote shell.
@@ -45,6 +46,12 @@ rsync -a --delete \
   if [[ "$AUTO" == true ]]; then printf 'COMPOSE_PROFILES=auto-update\n'; fi
   if [[ -n "${VELOCITY_ADMIN_PASSWORD:-}" ]]; then printf 'VELOCITY_ADMIN_PASSWORD=%s\n' "$VELOCITY_ADMIN_PASSWORD"; fi
 } | ssh "$HOST" "umask 077 && cat > '$APP/app/.env'"
+
+# Your local overlay (gitignored, never in the image): HTML, scripts and files added to the public site.
+if [[ -d local/overlay ]]; then
+  ssh "$HOST" "mkdir -p '$APP/data/overlay'"
+  rsync -a --delete local/overlay/ "$HOST:$APP/data/overlay/"
+fi
 
 if $SEED; then
   # Past seasons never change; the current season is re-downloaded by the server anyway.

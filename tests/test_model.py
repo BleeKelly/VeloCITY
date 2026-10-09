@@ -39,7 +39,7 @@ def make_pbp(n_games=4, plays_per_game=40, seed=0):
                 "game_id": f"{season}_{g:02d}_{away}_{home}", "play_id": i, "season": season,
                 "season_type": "REG", "week": g + 1, "game_date": f"{season}-09-{10 + g:02d}",
                 "location": "Home", "home_team": home, "away_team": away,
-                "home_score": 20, "away_score": 17, "home_coach": "H", "away_coach": "A",
+                "home_score": 20 + 3 * g, "away_score": 17 + 7 * (g % 3), "home_coach": "H", "away_coach": "A",
                 "posteam": pos, "defteam": "MIA" if pos == "BUF" else "BUF",
                 "play_type": "pass", "down": 1 + i % 4, "ydstogo": 10,
                 "yards_gained": 10 if win else 0, "interception": 0, "fumble_lost": 0,

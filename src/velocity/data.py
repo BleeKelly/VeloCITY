@@ -15,6 +15,9 @@ _REPO = Path(__file__).resolve().parents[2]
 DATA_DIR = Path(_STORE) / "raw" if _STORE else _REPO / "data" / "raw"
 OUTPUT_DIR = Path(_STORE) / "output" if _STORE else _REPO / "output"
 SETTINGS_FILE = Path(_STORE) / "settings.json" if _STORE else _REPO / "data" / "settings.json"
+# Optional local overlay: your own HTML, scripts and files added to the public site (see README).
+OVERLAY_DIR = Path(os.environ.get("VELOCITY_OVERLAY")
+                   or (Path(_STORE) / "overlay" if _STORE else _REPO / "local" / "overlay"))
 FIRST_SEASON = 1999
 
 # The in-progress season's file is rebuilt nightly; re-download it once it's older than this.

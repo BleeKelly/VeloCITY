@@ -63,6 +63,9 @@ const toggles = (rerender) => [
 ];
 
 async function api(path) {
+  // Data requests carry the data revision so a CDN can cache them until the ratings change.
+  const rev = store.summary && store.summary.revision;
+  if (rev && /^\/api\/(team|season|games|game)\b/.test(path)) path += `${path.includes("?") ? "&" : "?"}r=${rev}`;
   const res = await fetch(path, { headers: { Accept: "application/json" } });
   const body = await res.json().catch(() => ({}));
   if (res.status === 503) throw Object.assign(new Error("building"), { building: true, status: body.status });
@@ -821,7 +824,7 @@ async function viewGame(app, gameId) {
       h("div", { class: "table-wrap" }, h("table", { class: "plays" }, tbody))),
   );
   document.title = `${away} @ ${home} · VeloCITY`;
-  if (isLive) store.timers.push(setTimeout(() => render({ keepScroll: true }), 30000));
+  if (isLive) store.timers.push(setTimeout(async () => { await loadSummary().catch(() => {}); render({ keepScroll: true }); }, 30000));
 }
 
 async function viewSeason(app, year) {

@@ -171,6 +171,42 @@ The admin site has no login of its own. Keep its port on your local network (don
 through a public reverse proxy), or set `VELOCITY_ADMIN_PASSWORD` to require a password
 (HTTP basic auth, any username). `--no-admin` turns it off.
 
+## Local overlay
+
+Add your own HTML, scripts and files to the public site without changing the code or the image.
+Put them in an `overlay/` folder in the data volume (`/data/overlay` in the container;
+`local/overlay/` in a checkout, which is gitignored and synced to the server by `deploy/deploy.sh`):
+
+| File | Where it goes |
+|---|---|
+| `head.html` | just before `</head>` on every public page |
+| `body.html` | just before `</body>` on every public page |
+| any other file, e.g. `extra.js` | served at `/local/extra.js` |
+| `public/<name>`, e.g. `public/robots.txt` | served at the site root, `/robots.txt` |
+
+Changes show up on the next page load (or within the CDN's 5-minute page cache). The admin site
+never gets the overlay.
+
+## Caching (Cloudflare or any CDN)
+
+Responses carry cache headers meant for a CDN in front of the public site:
+
+| Response | Cache-Control |
+|---|---|
+| `/static/app.js?v=…`, `app.css?v=…` (versioned by content) | 1 year, immutable |
+| Data with `?r=<revision>` (team, season, games, game) | 1 year, immutable: the app asks for a new revision whenever ratings change (a rebuild or a live play) |
+| `/api/summary`, live data | 15 s in browsers, 30 s at the edge |
+| HTML pages | revalidate in browsers, 5 min at the edge |
+| Icons, logo | 1 day |
+| Admin site | never cached |
+
+Every response has an ETag (cheap 304s) and `Vary: Accept-Encoding`. With Cloudflare: proxy the
+DNS record (orange cloud), set SSL/TLS to **Full (strict)**, and add a Cache Rule for the hostname
+that makes requests **eligible for cache** with Edge TTL **using the origin's cache-control**.
+Cloudflare doesn't cache HTML or JSON without that rule. If your origin gets its certificate
+by HTTP challenge, keep `/.well-known/acme-challenge/` out of any "Always use HTTPS" redirect (or
+switch to a DNS challenge).
+
 ## Data
 
 - [nflverse](https://github.com/nflverse/nflverse-data) play-by-play, snap counts, rosters and

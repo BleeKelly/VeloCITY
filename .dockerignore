@@ -8,3 +8,4 @@ tests
 deploy
 .claude
 uv.lock
+local

@@ -153,3 +153,11 @@ def test_admin_preview(admin):
     _, url = admin
     out = call(f"{url}/api/preview", {"rules": DEFAULT_RULES.to_dict(), "plays": [{"down": 3, "ydstogo": 5, "yards_gained": 4}]})
     assert out["scores"] == [0.5] and out["preview"]["downs"]
+
+
+def test_admin_is_never_cached(admin):
+    _, url = admin
+    req = urllib.request.Request(f"{url}/api/settings")
+    req.add_header("Authorization", "Basic " + base64.b64encode(b"admin:s3cret").decode())
+    with urllib.request.urlopen(req) as resp:
+        assert resp.headers["Cache-Control"] == "no-store"

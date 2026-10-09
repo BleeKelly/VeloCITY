@@ -1,4 +1,10 @@
+import json
+import threading
+import urllib.request
+from http.server import ThreadingHTTPServer
+
 import pandas as pd
+import pytest
 
 from velocity import data
 from velocity.server import super_bowls
@@ -21,8 +27,9 @@ def test_super_bowl_is_each_finished_seasons_last_playoff_game():
     assert super_bowls(games) == {2018: {"team": "NE", "runner_up": "LA", "score": "13–3", "game_id": "2018_21_NE_LA"}}
 
 
-def test_state_rebuild_and_views_on_synthetic_data(monkeypatch, tmp_path):
-    """The whole server pipeline, offline: rebuild, then every view the web app calls."""
+@pytest.fixture
+def built(monkeypatch, tmp_path):
+    """A server State rebuilt from synthetic games, offline."""
     from velocity import live, server
     from velocity.config import PlayConfig
     from velocity.settings import Settings
@@ -39,11 +46,18 @@ def test_state_rebuild_and_views_on_synthetic_data(monkeypatch, tmp_path):
         raise OSError("offline")
 
     monkeypatch.setattr(live, "team_meta", offline)
+    monkeypatch.setattr(server.data, "OVERLAY_DIR", tmp_path / "overlay")
     state = server.State(PlayConfig(), Settings(decay=False), rebuild_hours=[], live_enabled=False)
     state.rebuild(refresh=False)
     assert state.status["error"] is None and state.snap
+    return state, pbp
 
+
+def test_state_rebuild_and_views_on_synthetic_data(built):
+    """The whole server pipeline: every view the web app calls."""
+    state, pbp = built
     summary = state.summary()
+    assert summary["revision"] != "0"
     assert {r["team"] for r in summary["ratings"]} == {"BUF", "MIA"}
     for key in ("v_off", "v_def", "v_net", "v_off_rank", "net_ng", "live_change"):
         assert key in summary["ratings"][0]
@@ -66,3 +80,49 @@ def test_pages_link_versioned_assets():
     v = asset_version()
     assert f'"/static/app.js?v={v}"' in html and f'"/static/app.css?v={v}"' in html
     assert f'"/static/admin.js?v={v}"' in page("admin.html").decode()
+
+
+def test_public_http_cache_headers_and_overlay(built):
+    """Headers a CDN keys off (long-lived for versioned files and revisioned data, short for live data),
+    and the local overlay's files showing up in pages and at the site root."""
+    from velocity import server
+
+    state, pbp = built
+    overlay = server.data.OVERLAY_DIR
+    (overlay / "public").mkdir(parents=True)
+    (overlay / "head.html").write_text("<script src=/local/extra.js></script>")
+    (overlay / "body.html").write_text("<b>hi</b>")
+    (overlay / "extra.js").write_text("console.log('local')")
+    (overlay / "public" / "robots.txt").write_text("robots ok")
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.make_handler(state))
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{httpd.server_port}"
+
+    def get(path, **headers):
+        req = urllib.request.Request(base + path, headers=headers)
+        try:
+            with urllib.request.urlopen(req) as r:
+                return r.status, dict(r.headers), r.read()
+        except urllib.error.HTTPError as e:
+            return e.code, dict(e.headers), e.read()
+
+    try:
+        code, h, body = get("/")
+        assert code == 200 and h["Cache-Control"] == server.CACHE_PAGE and h["Vary"] == "Accept-Encoding"
+        assert body.index(b"/local/extra.js?v=") < body.index(b"</head>") and body.index(b"<b>hi</b>") < body.index(b"</body>")
+        assert get("/", **{"If-None-Match": h["ETag"]})[0] == 304
+        assert get("/local/extra.js")[2] == b"console.log('local')"
+        assert get("/local/extra.js?v=1")[1]["Cache-Control"] == server.CACHE_IMMUTABLE
+        assert get("/local/..%2Fsettings.json")[0] == 404
+        assert get(f"/static/app.js?v={server.asset_version()}")[1]["Cache-Control"] == server.CACHE_IMMUTABLE
+        assert get("/static/icon-512.png")[1]["Cache-Control"] == server.CACHE_ASSET
+        code, h, body = get("/api/summary")
+        assert h["Cache-Control"] == server.CACHE_LIVE
+        rev = json.loads(body)["revision"]
+        assert get(f"/api/team/BUF?r={rev}")[1]["Cache-Control"] == server.CACHE_IMMUTABLE
+        assert get("/api/team/BUF")[1]["Cache-Control"] == server.CACHE_LIVE
+        assert get("/robots.txt")[2] == b"robots ok"
+        code, h, _ = get("/no-such-page")
+        assert code == 404 and h["Cache-Control"] == server.CACHE_MISS
+    finally:
+        httpd.shutdown()

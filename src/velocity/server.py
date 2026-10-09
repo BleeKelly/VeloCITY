@@ -14,6 +14,8 @@ import gzip
 import hashlib
 import hmac
 import json
+import math
+import re
 import threading
 import time
 import traceback
@@ -22,6 +24,7 @@ from datetime import datetime
 from functools import lru_cache
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import numpy as np
@@ -47,6 +50,15 @@ COACH_DISCLAIMER = COACHING_DOC.split("\n\n")[1].replace("\n", " ")
 STATIC_TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
                 ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png",
                 ".ico": "image/x-icon", ".webmanifest": "application/manifest+json"}
+# Cache-Control policies, written for a CDN (Cloudflare) in front of the public site.
+CACHE_IMMUTABLE = "public, max-age=31536000, immutable"       # URL changes when content does (?v=, ?r=)
+CACHE_ASSET = "public, max-age=86400, stale-while-revalidate=604800"  # icons, logo, manifest
+CACHE_SCRIPT = "public, max-age=300"                          # an unversioned app.js/app.css request
+CACHE_PAGE = "public, max-age=0, s-maxage=300, stale-while-revalidate=600"  # the HTML shell
+CACHE_LIVE = "public, max-age=15, s-maxage=30, stale-while-revalidate=30"   # summary, live data
+CACHE_MISS = "public, max-age=0, s-maxage=60"                 # 404s and bad requests
+NO_STORE = "no-store"                                         # admin, and "still building"
+
 # Browsers and iOS ask for these at the site root.
 ROOT_FILES = {"favicon.ico": "favicon.ico", "apple-touch-icon.png": "apple-touch-icon.png",
               "apple-touch-icon-precomposed.png": "apple-touch-icon.png"}
@@ -77,13 +89,57 @@ def asset_version() -> str:
     return h.hexdigest()[:10]
 
 
-def page(name: str) -> bytes:
-    """An HTML page with versioned links to its scripts and styles."""
+OVERLAY_TYPES = STATIC_TYPES | {".txt": "text/plain; charset=utf-8", ".jpg": "image/jpeg",
+                                ".webp": "image/webp", ".json": "application/json", ".xml": "application/xml"}
+
+
+def overlay_file(name: str, sub: str = "") -> Path | None:
+    """A file from the local overlay folder, if there is one (plain file names only)."""
+    if not name or "/" in name or "\\" in name or name.startswith("."):
+        return None
+    f = data.OVERLAY_DIR / sub / name if sub else data.OVERLAY_DIR / name
+    return f if f.is_file() and f.suffix in OVERLAY_TYPES else None
+
+
+def page(name: str, overlay: bool = False) -> bytes:
+    """An HTML page with versioned links to its scripts and styles.
+
+    With `overlay`, the local overlay's head.html and body.html go just before </head> and </body>.
+    """
     html = (WEB / name).read_text()
     v = asset_version()
     for asset in ("app.css", "app.js", "admin.js"):
         html = html.replace(f'"/static/{asset}"', f'"/static/{asset}?v={v}"')
+    if overlay:
+        for slot, marker in (("head.html", "</head>"), ("body.html", "</body>")):
+            if f := overlay_file(slot):
+                html = html.replace(marker, version_local_links(f.read_text()) + "\n" + marker, 1)
     return html.encode()
+
+
+LOCAL_LINK = re.compile(r"""(["']?)/local/([^"'?#/\s>]+)\1""")  # quoted or bare attribute values
+
+
+def version_local_links(html: str) -> str:
+    """Point "/local/x.js" links at "/local/x.js?v=<content hash>" so edits show on the next load."""
+    def tag(m: re.Match) -> str:
+        f = overlay_file(m.group(2))
+        if not f:
+            return m.group(0)
+        v = hashlib.sha1(f.read_bytes()).hexdigest()[:10]
+        return f"{m.group(1)}/local/{m.group(2)}?v={v}{m.group(1)}"
+    return LOCAL_LINK.sub(tag, html)
+
+
+def finite(obj):
+    """NaN and infinity become null so JSON stays valid."""
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {k: finite(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [finite(v) for v in obj]
+    return obj
 
 
 def records(df: pd.DataFrame, digits: int = 2) -> list[dict]:
@@ -133,6 +189,9 @@ class State:
         self.build_lock = threading.Lock()    # one rebuild at a time; later requests queue behind it
         self._sample: pd.DataFrame | None = None
         self.public_port: int | None = None
+        self.revision = "0"  # changes only when ratings data changes: a rebuild or new live plays
+        self._live_print = None
+
         self.snap: dict[str, Snapshot] = {}
         self.live: dict[str, dict] = {}           # variant -> live events/result/games/history
         self.live_events = pd.DataFrame()
@@ -214,6 +273,8 @@ class State:
             with self.lock:
                 self.snap = snap
                 self.champions = champions
+                self._live_print = None
+                self.revision = hashlib.sha1(f"{datetime.now().isoformat()}|{id(snap)}".encode()).hexdigest()[:12]
                 self.status.update(built_at=datetime.now(live.EASTERN).isoformat(timespec="seconds"), error=None)
             print(f"rebuilt through {snap['all'].games.iloc[-1]['game_id']}")
             self.refresh_live()
@@ -260,9 +321,14 @@ class State:
                                  "history": game_history(ev, res)}
                 if name == "all":
                     live_events = slim_events(ev, res.p, res.delta)
+        fingerprint = json.dumps([[g["game_id"], g["state"], g["home_score"], g["away_score"], g["status"]] for g in board]
+                                 + [len(live_events)], default=str)
         with self.lock:
             self.scoreboard, self.live, self.live_events = board, results, live_events
             self.status["live_at"] = datetime.now(live.EASTERN).isoformat(timespec="seconds")
+            if fingerprint != self._live_print:
+                self._live_print = fingerprint
+                self.revision = hashlib.sha1(f"{self.revision}|{fingerprint}".encode()).hexdigest()[:12]
 
     def loop(self) -> None:
         self.rebuild()
@@ -307,6 +373,7 @@ class State:
         last = self.snap["all"].games.iloc[-1]
         return {
             "status": self.status | {"through": {"season": int(last["season"]), "week": int(last["week"])}},
+            "revision": self.revision,
             "metrics": {name: s.metrics for name, s in self.snap.items()},
             "labels": {name: s.label for name, s in self.snap.items()},
             "teams": self.teams_meta,
@@ -456,29 +523,37 @@ class BaseHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):  # keep container logs to errors
         pass
 
-    def send(self, code: int, body: bytes, ctype: str, headers: dict | None = None) -> None:
+    def send(self, code: int, body: bytes, ctype: str, headers: dict | None = None, cache: str = NO_STORE) -> None:
+        etag = f'"{hashlib.sha1(body).hexdigest()[:16]}"'
+        common = {"Cache-Control": cache, "ETag": etag, "Vary": "Accept-Encoding", **(headers or {})}
+        if code == 200 and etag in self.headers.get("If-None-Match", ""):
+            self.send_response(304)
+            for k, v in common.items():
+                self.send_header(k, v)
+            self.end_headers()
+            return
         gz = len(body) > 1024 and "gzip" in self.headers.get("Accept-Encoding", "")
         if gz:
             body = gzip.compress(body, 5)
         self.send_response(code)
         if gz:
             self.send_header("Content-Encoding", "gzip")
-        for k, v in (headers or {}).items():
+        for k, v in common.items():
             self.send_header(k, v)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-cache")
         self.end_headers()
         self.wfile.write(body)
 
-    def json(self, obj, code: int = 200) -> None:
-        self.send(code, json.dumps(obj, allow_nan=False, default=str).encode(), "application/json")
+    def json(self, obj, code: int = 200, cache: str = NO_STORE) -> None:
+        self.send(code, json.dumps(obj, allow_nan=False, default=str).encode(), "application/json", cache=cache)
 
-    def static(self, name: str) -> bool:
+    def static(self, name: str, versioned: bool = False) -> bool:
         f = WEB / name
         ext = "." + name.rsplit(".", 1)[-1]
         if "/" not in name and f.is_file() and ext in STATIC_TYPES:
-            self.send(200, f.read_bytes(), STATIC_TYPES[ext])
+            cache = CACHE_IMMUTABLE if versioned else CACHE_SCRIPT if ext in (".js", ".css") else CACHE_ASSET
+            self.send(200, f.read_bytes(), STATIC_TYPES[ext], cache=cache)
             return True
         return False
 
@@ -497,42 +572,51 @@ def make_handler(state: State):
             parts = [p for p in url.path.split("/") if p]
             try:
                 if not parts or parts[0] in ("team", "game", "games", "season", "rules", "chart", "glossary"):
-                    return self.send(200, page("index.html"), STATIC_TYPES[".html"])
-                if parts[0] == "static" and len(parts) == 2 and self.static(parts[1]):
+                    return self.send(200, page("index.html", overlay=True), STATIC_TYPES[".html"], cache=CACHE_PAGE)
+                if parts[0] == "static" and len(parts) == 2 and self.static(parts[1], versioned="v" in q):
                     return
                 if len(parts) == 1 and parts[0] in ROOT_FILES and self.static(ROOT_FILES[parts[0]]):
                     return
-                if parts[0] not in ("api", "static"):
+                # Local overlay: /local/<file>, and overlay/public/<file> at the site root (e.g. robots.txt).
+                if len(parts) == 2 and parts[0] == "local" and (f := overlay_file(parts[1])):
+                    cache = CACHE_IMMUTABLE if "v" in q else CACHE_SCRIPT if f.suffix in (".js", ".css") else CACHE_ASSET
+                    return self.send(200, f.read_bytes(), OVERLAY_TYPES[f.suffix], cache=cache)
+                if len(parts) == 1 and (f := overlay_file(parts[0], "public")):
+                    return self.send(200, f.read_bytes(), OVERLAY_TYPES[f.suffix], cache="public, max-age=3600")
+                if parts[0] not in ("api", "static", "local"):
                     # Unknown page: the app shows its own "not found" view.
-                    return self.send(404, page("index.html"), STATIC_TYPES[".html"])
+                    return self.send(404, page("index.html", overlay=True), STATIC_TYPES[".html"], cache=CACHE_MISS)
                 if parts[0] != "api":
-                    return self.json({"error": "not found"}, 404)
+                    return self.json({"error": "not found"}, 404, CACHE_MISS)
                 if parts[1:] == ["status"]:
-                    return self.json(state.status)
+                    return self.json(state.status | {"revision": state.revision}, cache="public, max-age=5, s-maxage=10")
                 if not state.snap:
                     return self.json({"error": "ratings are still building", "status": state.status}, 503)
                 variant = q.get("variant") if q.get("variant") in state.snap else "all"
+                # Data requests carry the revision they were made for (?r=), so they can be cached forever:
+                # a rebuild or a new live play changes the revision, and with it the URL.
+                data_cache = CACHE_IMMUTABLE if q.get("r") else CACHE_LIVE
                 with state.lock:
                     if parts[1:] == ["summary"]:
-                        return self.json(state.summary())
+                        return self.json(finite(state.summary()), cache=CACHE_LIVE)
                     if parts[1:] == ["widget"]:
-                        return self.json(state.widget())
+                        return self.json(state.widget(), cache=CACHE_LIVE)
                     if len(parts) == 3 and parts[1] == "team":
                         body = state.team(parts[2].upper(), variant)
-                        return self.json(body) if body else self.json({"error": "unknown team"}, 404)
+                        return self.json(body, cache=data_cache) if body else self.json({"error": "unknown team"}, 404, CACHE_MISS)
                     if parts[1:] == ["games"]:
                         season = int(q.get("season", state.snap["all"].games["season"].max()))
                         week = int(q["week"]) if q.get("week") else None
-                        return self.json(state.games(season, week))
+                        return self.json(state.games(season, week), cache=data_cache)
                     if len(parts) == 3 and parts[1] == "season":
                         body = state.season(int(parts[2]), variant)
-                        return self.json(body) if body else self.json({"error": "unknown season"}, 404)
+                        return self.json(body, cache=data_cache) if body else self.json({"error": "unknown season"}, 404, CACHE_MISS)
                     if len(parts) == 3 and parts[1] == "game":
                         body = state.game(parts[2])
-                        return self.json(body) if body else self.json({"error": "unknown game"}, 404)
-                return self.json({"error": "not found"}, 404)
+                        return self.json(body, cache=data_cache) if body else self.json({"error": "unknown game"}, 404, CACHE_MISS)
+                return self.json({"error": "not found"}, 404, CACHE_MISS)
             except (ValueError, KeyError) as e:
-                return self.json({"error": f"bad request: {e}"}, 400)
+                return self.json({"error": f"bad request: {e}"}, 400, CACHE_MISS)
             except Exception as e:
                 traceback.print_exc()
                 return self.json({"error": str(e)}, 500)
