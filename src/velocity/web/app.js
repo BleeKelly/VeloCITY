@@ -1076,6 +1076,16 @@ function viewGlossary(app) {
   }
 }
 
+function viewNotFound(app) {
+  setNav("");
+  app.replaceChildren(h("div", { class: "empty" },
+    h("h1", {}, "Page not found"),
+    h("p", {}, "If this page should exist, your browser may be running an older copy of VeloCITY. Reload to get the latest."),
+    h("p", {}, h("button", { type: "button", class: "btn", onclick: () => location.reload() }, "Reload"), " ",
+      h("a", { href: "/", "data-link": true, class: "btn ghost" }, "Go to ratings"))));
+  document.title = "Not found · VeloCITY";
+}
+
 function viewPreview(app, g) {
   app.replaceChildren(
     h("div", { class: "card", style: { marginTop: "18px" } },
@@ -1112,7 +1122,8 @@ async function render(opts = {}) {
     else if (parts[0] === "rules") viewRules(app);
     else if (parts[0] === "chart") await viewChart(app, url.searchParams);
     else if (parts[0] === "glossary") viewGlossary(app);
-    else { viewRatings(app, url.searchParams); document.title = "VeloCITY"; }
+    else if (!parts.length) { viewRatings(app, url.searchParams); document.title = "VeloCITY"; }
+    else viewNotFound(app);
     if (opts.keepScroll) scrollTo(0, scroll); else if (!opts.soft) scrollTo(0, 0);
   } catch (e) {
     if (e.building) return showBuilding(e.status);

@@ -57,3 +57,12 @@ def test_state_rebuild_and_views_on_synthetic_data(monkeypatch, tmp_path):
     game = state.game(game_id)
     assert game["events"] and {"boom", "havoc", "weight", "p", "delta"} <= set(game["events"][0])
     assert state.widget()["leader"] in {"BUF", "MIA"}
+
+
+def test_pages_link_versioned_assets():
+    from velocity.server import asset_version, page
+
+    html = page("index.html").decode()
+    v = asset_version()
+    assert f'"/static/app.js?v={v}"' in html and f'"/static/app.css?v={v}"' in html
+    assert f'"/static/admin.js?v={v}"' in page("admin.html").decode()

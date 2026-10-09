@@ -11,6 +11,7 @@ game shows up in nflverse.
 
 import base64
 import gzip
+import hashlib
 import hmac
 import json
 import threading
@@ -65,6 +66,24 @@ class Snapshot:
     history: pd.DataFrame   # game_history
     offseason: pd.DataFrame | None  # per team-season carryover and decay features
     elo_cfg: EloConfig
+
+
+@lru_cache(maxsize=1)
+def asset_version() -> str:
+    """Changes whenever the web app's files change, so browsers never mix an old app.js with new HTML."""
+    h = hashlib.sha1()
+    for name in sorted(f.name for f in WEB.iterdir() if f.name.endswith((".js", ".css"))):
+        h.update((WEB / name).read_bytes())
+    return h.hexdigest()[:10]
+
+
+def page(name: str) -> bytes:
+    """An HTML page with versioned links to its scripts and styles."""
+    html = (WEB / name).read_text()
+    v = asset_version()
+    for asset in ("app.css", "app.js", "admin.js"):
+        html = html.replace(f'"/static/{asset}"', f'"/static/{asset}?v={v}"')
+    return html.encode()
 
 
 def records(df: pd.DataFrame, digits: int = 2) -> list[dict]:
@@ -478,11 +497,14 @@ def make_handler(state: State):
             parts = [p for p in url.path.split("/") if p]
             try:
                 if not parts or parts[0] in ("team", "game", "games", "season", "rules", "chart", "glossary"):
-                    return self.send(200, (WEB / "index.html").read_bytes(), STATIC_TYPES[".html"])
+                    return self.send(200, page("index.html"), STATIC_TYPES[".html"])
                 if parts[0] == "static" and len(parts) == 2 and self.static(parts[1]):
                     return
                 if len(parts) == 1 and parts[0] in ROOT_FILES and self.static(ROOT_FILES[parts[0]]):
                     return
+                if parts[0] not in ("api", "static"):
+                    # Unknown page: the app shows its own "not found" view.
+                    return self.send(404, page("index.html"), STATIC_TYPES[".html"])
                 if parts[0] != "api":
                     return self.json({"error": "not found"}, 404)
                 if parts[1:] == ["status"]:
@@ -542,7 +564,7 @@ def make_admin_handler(state: State, password: str | None):
                 return
             parts = [p for p in urlparse(self.path).path.split("/") if p]
             if not parts:
-                return self.send(200, (WEB / "admin.html").read_bytes(), STATIC_TYPES[".html"])
+                return self.send(200, page("admin.html"), STATIC_TYPES[".html"])
             if parts[0] == "static" and len(parts) == 2 and self.static(parts[1]):
                 return
             if len(parts) == 1 and parts[0] in ROOT_FILES and self.static(ROOT_FILES[parts[0]]):

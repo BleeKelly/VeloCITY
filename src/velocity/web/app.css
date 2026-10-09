@@ -123,7 +123,9 @@ button, select { font: inherit; color: inherit; }
 .live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--bad); box-shadow: 0 0 0 0 var(--bad); animation: pulse 1.6s infinite; }
 @keyframes pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--bad) 60%, transparent); } 100% { box-shadow: 0 0 0 8px transparent; } }
 .icon-btn { border: 1px solid var(--border); background: var(--surface); border-radius: 999px; width: 34px; height: 34px; cursor: pointer;
-  display: inline-grid; place-items: center; color: var(--ink-2); flex: 0 0 auto; }
+  display: inline-flex; align-items: center; justify-content: center; padding: 0; line-height: 1;
+  color: var(--ink-2); flex: 0 0 auto; box-sizing: border-box; }
+.icon-btn svg { display: block; flex: 0 0 auto; }
 .icon-btn:hover { color: var(--ink); background: var(--surface-2); }
 .footer a { color: var(--ink-2); text-decoration: underline; text-underline-offset: 2px; }
 
