@@ -1,0 +1,40 @@
+name: Deploy
+
+# Pulls the new image on your server over Tailscale after a release on main.
+# Off until the repo variable DEPLOY_ENABLED is "true", DEPLOY_PATH is set (the server folder
+# with docker-compose.yml and its .env), and these secrets exist:
+#   TS_OAUTH_CLIENT_ID / TS_OAUTH_SECRET  Tailscale OAuth client (tag:ci)
+#   DEPLOY_HOST                           the server's Tailscale IP or MagicDNS name
+#   DEPLOY_SSH_KEY                        private key for DEPLOY_USER (repo variable, default root)
+on:
+  workflow_run:
+    workflows: ["Release image"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    if: vars.DEPLOY_ENABLED == 'true' && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+      - name: Pull and restart
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+          DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          IMAGE="ghcr.io/$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')/velocity:latest"  # GHCR names are lowercase
+          install -m 600 /dev/null ~/.ssh_key && printf '%s\n' "$SSH_KEY" > ~/.ssh_key
+          ssh -i ~/.ssh_key -o StrictHostKeyChecking=accept-new "${DEPLOY_USER:-root}@$HOST" \
+            "cd '$DEPLOY_PATH' && VELOCITY_IMAGE=$IMAGE docker compose pull && VELOCITY_IMAGE=$IMAGE docker compose up -d --no-build"

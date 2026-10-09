@@ -1,0 +1,17 @@
+name: velocity
+
+services:
+  velocity:
+    build: .
+    image: ${VELOCITY_IMAGE:-velocity:latest}
+    container_name: velocity
+    restart: unless-stopped
+    ports:
+      - "8097:8097"
+    environment:
+      - TZ=America/New_York
+    user: "${VELOCITY_USER:-1000:1000}"
+    volumes:
+      # Parquet cache (raw/) and CSV output (output/). Set VELOCITY_DATA in .env on a server.
+      - ${VELOCITY_DATA:-./store}:/data
+    command: ["velocity", "serve", "--host", "0.0.0.0", "--port", "8097", "--rebuild-hours", "6", "12"]
