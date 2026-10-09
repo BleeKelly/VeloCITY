@@ -381,7 +381,8 @@ class State:
         now = pd.DataFrame(self.ratings_now("all" + scope), columns=list(UNITS))[["off", "def", "coach"]]
         now["team"] = snap.events.teams
         now = now[now["team"].isin(table["team"])]
-        now["net"] = (now["off"] - now["off"].mean()) + (now["def"] - now["def"].mean())
+        avg = now[~now["team"].isin(POOLED)][["off", "def"]].mean()
+        now["net"] = (now["off"] - avg["off"]) + (now["def"] - avg["def"])
         table = table.merge(now.add_prefix("live_").rename(columns={"live_team": "team"}), on="team")
         table["live_change"] = table["live_net"] - table["net"]
         table["head_coach"] = table["team"].map(self.coaches).fillna(table["head_coach"])
@@ -472,9 +473,10 @@ class State:
         row = snap.table[snap.table["team"] == abbr]
         if len(row):
             current = records(row.assign(head_coach=self.coaches.get(abbr, row["head_coach"].iloc[0])), 1)[0]
-        else:  # a pooled slot (FCS) or a program no longer in the table: ratings, no ranks
+            current["inactive"] = bool(row["pooled"].iloc[0])  # the pooled FCS slot: shown, never ranked
+        else:  # a program no longer in the table: ratings, no ranks
             r = self.ratings_now(variant)[list(snap.events.teams).index(abbr)]
-            avg = snap.table[["off", "def", "coach"]].mean()
+            avg = snap.table[~snap.table["pooled"]][["off", "def", "coach"]].mean()
             current = {"team": abbr, "inactive": True, "head_coach": None, "off": round(float(r[OFF]), 1),
                        "def": round(float(r[DEF]), 1), "coach": round(float(r[COACH]), 1),
                        "net": round(float(r[OFF] - avg["off"] + r[DEF] - avg["def"]), 1)}
@@ -487,7 +489,7 @@ class State:
             "team": abbr,
             "meta": self.teams_meta.get(abbr, {}),
             "current": current,
-            "rated_teams": len(snap.table),
+            "rated_teams": int((~snap.table["pooled"]).sum()),
             "history": records(hist[["season", "season_type", "week", "game_date", "game_id", "opponent", "home",
                                      "points_for", "points_against", "off_post", "def_post", "coach_post", "net",
                                      "net_pre"]
@@ -558,6 +560,7 @@ class State:
     def widget(self) -> dict:
         """Compact numbers for dashboard widgets."""
         t = self.snap["all"].table
+        t = t[~t["pooled"]]
         top = " · ".join(f"{i + 1}. {r.team} {r.net:+.0f}" for i, r in t.head(5).iterrows())
         return {"top5": top, "leader": t.iloc[0]["team"], "live": sum(g["state"] == "in" for g in self.scoreboard),
                 "updated": self.status["built_at"]}

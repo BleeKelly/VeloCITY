@@ -22,8 +22,8 @@ from .outcomes import boom_score, havoc_score, play_score, play_weight
 UNITS = ("off", "def", "coach", "boom", "boom_def", "havoc", "havoc_off")
 OFF, DEF, COACH, BOOM, BOOM_DEF, HAVOC, HAVOC_OFF = range(len(UNITS))
 PLAY, COACHING, VBOOM, VHAVOC = 0, 1, 2, 3  # event kinds
-# Rating slots shared by many opponents (college: every non-FBS team is "FCS"); rated, but left out
-# of the tables, ranks and averages.
+# Rating slots shared by many opponents (college: every non-FBS team is "FCS"). They're rated and shown
+# in the table for comparison, but get no rank and don't count toward the averages.
 POOLED = {"FCS"}
 ZONE_BINS = [0, 10, 20, 40, 60, 80, 100]    # yards from the end zone
 FG_BINS = [0, 29, 39, 49, 99]               # kick distance
@@ -341,24 +341,26 @@ def run_elo(events: Events, cfg: EloConfig, start: EloState | None = None,
                      regressed=regressed)
 
 
-def active_teams(events: Events) -> list[str]:
+def active_teams(events: Events, pooled: bool = False) -> list[str]:
     """Teams that played in the latest season or the one before (college programs come and go from
-    FBS), minus pooled slots like college's shared FCS rating."""
+    FBS); pooled slots like college's shared FCS rating only when asked for."""
     g = events.games
     recent = g[g["season"] >= g["season"].max() - 1]
     playing = set(recent["home_team"]) | set(recent["away_team"])
-    return [t for t in events.teams if t in playing and t not in POOLED]
+    return [t for t in events.teams if t in playing and (pooled or t not in POOLED)]
 
 
 def team_table(events: Events, res: EloResult) -> pd.DataFrame:
     """Final ratings, plus each team's raw play win rates in the latest season for context."""
     r = res.ratings.reshape(-1, len(UNITS))
     t = pd.DataFrame({"team": events.teams, **{unit: r[:, i] for i, unit in enumerate(UNITS)}})
-    t = t[t["team"].isin(active_teams(events))].reset_index(drop=True)
-    t["net"] = (t["off"] - t["off"].mean()) + (t["def"] - t["def"].mean())
+    t = t[t["team"].isin(active_teams(events, pooled=True))].reset_index(drop=True)
+    t["pooled"] = t["team"].isin(POOLED)
+    avg = t[~t["pooled"]][list(UNITS)].mean()
+    t["net"] = (t["off"] - avg["off"]) + (t["def"] - avg["def"])
     # V-City: offense = big plays created, defense = havoc created, net = all four units
     # (big plays and havoc created, minus what's allowed), each above average.
-    rel = {u: t[u] - t[u].mean() for u in ("boom", "boom_def", "havoc", "havoc_off")}
+    rel = {u: t[u] - avg[u] for u in ("boom", "boom_def", "havoc", "havoc_off")}
     t["v_off"], t["v_def"] = rel["boom"], rel["havoc"]
     t["v_net"] = rel["boom"] + rel["boom_def"] + rel["havoc"] + rel["havoc_off"]
 
@@ -375,7 +377,7 @@ def team_table(events: Events, res: EloResult) -> pd.DataFrame:
     t["head_coach"] = t["team"].map(last_coach)
 
     for col in ("net", "off", "def", "coach", "v_off", "v_def", "v_net"):
-        t[f"{col}_rank"] = t[col].rank(ascending=False, method="min").astype(int)
+        t[f"{col}_rank"] = t[col].where(~t["pooled"]).rank(ascending=False, method="min").astype("Int64")
     return t.sort_values("net", ascending=False).reset_index(drop=True)
 
 

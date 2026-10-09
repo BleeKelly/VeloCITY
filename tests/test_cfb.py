@@ -132,3 +132,19 @@ def test_title_game_decides_the_college_champion():
     ])
     champ = super_bowls(games, frozenset({"a"}))[2024]
     assert champ["team"] == "Ohio State" and champ["runner_up"] == "Notre Dame"
+
+
+def test_pooled_fcs_is_listed_but_not_ranked():
+    from velocity.config import EloConfig
+    from velocity.model import prepare, run_elo, team_table
+
+    from .test_model import make_pbp
+
+    pbp = make_pbp(n_games=4)
+    for col in ("home_team", "away_team", "posteam", "defteam", "penalty_team", "timeout_team"):
+        pbp[col] = pbp[col].replace({"MIA": "FCS"})
+    events = prepare(pbp, PlayConfig())
+    t = team_table(events, run_elo(events, EloConfig())).set_index("team")
+    assert t.loc["FCS", "pooled"] and pd.isna(t.loc["FCS", "net_rank"]) and pd.isna(t.loc["FCS", "off_rank"])
+    assert t.loc["BUF", "net_rank"] == 1
+    assert t.loc["BUF", "net"] == 0  # the average is over real teams only (here just BUF)

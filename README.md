@@ -118,8 +118,9 @@ VELOCITY_LEAGUE=ncaa uv run velocity serve --port 8099 --admin-port 8100
 ```
 
 - **Teams.** FBS programs are rated by school name. Every opponent outside FBS shares one rating,
-  `FCS`, which is rated like a team but left out of the table, ranks and averages. Games between two
-  non-FBS teams are skipped. Programs that left FBS keep their history but drop off the board.
+  `FCS`, rated like a team and listed on the board for comparison, but never ranked and not counted
+  in the averages. Games between two non-FBS teams are skipped. Programs that left FBS keep their
+  history but drop off the board.
 - **Model settings.** Tuned on college data by the same next-play log loss: K 1.25 with 30%
   off-season regression, V-City K 5 (30%), coaching K 3. The play rules are the NFL's. There's no
   roster-based decay (it needs NFL snap counts), so every team gets the same off-season pull.

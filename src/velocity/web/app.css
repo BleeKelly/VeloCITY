@@ -473,3 +473,6 @@ tr.runner-up td:first-child { box-shadow: inset 3px 0 0 var(--silver); }
 .glossary-list dt:hover .anchor, .glossary-list dt:target .anchor { opacity: 1; }
 .glossary-filter { width: 240px; max-width: 100%; }
 
+/* college: the pooled FCS rating, listed for comparison but not ranked */
+tr.pooled-row td { background: repeating-linear-gradient(135deg, transparent 0 8px, color-mix(in srgb, var(--muted) 9%, transparent) 8px 16px); }
+tr.pooled-row .name { font-style: italic; }

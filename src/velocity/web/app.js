@@ -75,7 +75,9 @@ async function api(path) {
   // Data requests carry the data revision so a CDN can cache them until the ratings change.
   const rev = store.summary && store.summary.revision;
   if (rev && /^\/api\/(team|season|games|game)\b/.test(path)) path += `${path.includes("?") ? "&" : "?"}r=${rev}`;
-  const res = await fetch(path, { headers: { Accept: "application/json" } });
+  // Revisioned URLs never change; anything else (summary, status) is checked with the server every
+  // time, even if a CDN stretched its browser cache lifetime.
+  const res = await fetch(path, { headers: { Accept: "application/json" }, cache: /[?&]r=/.test(path) ? "default" : "no-cache" });
   const body = await res.json().catch(() => ({}));
   if (res.status === 503) throw Object.assign(new Error("building"), { building: true, status: body.status });
   if (!res.ok) throw Object.assign(new Error(body.error || res.statusText), { code: res.status });
@@ -494,12 +496,15 @@ function viewRatings(app, params) {
   const arrow = (key) => (key === sortKey ? (sortDir < 0 ? " ▼" : " ▲") : "");
   const ariaSort = (key) => (key === sortKey ? (sortDir < 0 ? "descending" : "ascending") : null);
 
-  const top = [...rows].sort((a, b) => b[k("net")] - a[k("net")])[0];
-  const bestO = [...rows].sort((a, b) => b[k("off")] - a[k("off")])[0];
-  const bestD = [...rows].sort((a, b) => b[k("def")] - a[k("def")])[0];
+  // College's pooled FCS rating is listed for comparison, but it isn't a team: no rank, no tiles.
+  const ranked = rows.filter((r) => !r.pooled);
+  const top = [...ranked].sort((a, b) => b[k("net")] - a[k("net")])[0];
+  const bestO = [...ranked].sort((a, b) => b[k("off")] - a[k("off")])[0];
+  const bestD = [...ranked].sort((a, b) => b[k("def")] - a[k("def")])[0];
   const met = sm.metrics[setKey()];
+  const rkSpan = (n) => (n == null ? null : h("span", { class: "rk" }, ordinal(n)));
 
-  const maxAbs = Math.max(...rows.map((r) => Math.abs(r[k("net")])));
+  const maxAbs = Math.max(...ranked.map((r) => Math.abs(r[k("net")])));
   const table = h("table", {});
   const thead = h("thead", {});
   const tbody = h("tbody", {});
@@ -517,21 +522,22 @@ function viewRatings(app, params) {
       anyLive ? h("th", {}, "Live Δ") : null));
     tbody.replaceChildren(...rows.map((r, i) => {
       const net = r[k("net")];
-      const w = (Math.abs(net) / (maxAbs || 1)) * 42;
-      return h("tr", { class: "row-link", onclick: (e) => { if (!e.target.closest("a")) go(teamPath(r.team)); } },
-        h("td", { class: "rank" }, r[k("net_rank")]),
-        h("td", { class: "left" }, teamLink(r.team, r.head_coach)),
+      const w = Math.min(1, Math.abs(net) / (maxAbs || 1)) * 42;
+      return h("tr", { class: `row-link ${r.pooled ? "pooled-row" : ""}`, title: r.pooled ? "Every FCS opponent shares this one rating. Not ranked." : null,
+        onclick: (e) => { if (!e.target.closest("a")) go(teamPath(r.team)); } },
+        h("td", { class: "rank" }, r.pooled ? "—" : r[k("net_rank")]),
+        h("td", { class: "left" }, teamLink(r.team, r.pooled ? "All FCS opponents · not ranked" : r.head_coach)),
         h("td", { class: "num" }, h("span", { class: "net-bar" },
           h("strong", {}, signed(net)),
           h("span", { class: "track", "aria-hidden": "true" }, h("span", { class: "fill", style: { width: w + "px", left: net >= 0 ? "42px" : 42 - w + "px", background: net >= 0 ? "var(--series-1)" : "var(--series-2)" } })))),
         h("td", { class: "num" }, signed(r[k("spread")])),
-        h("td", { class: "num" }, fmt1(r[k("off")]), h("span", { class: "rk" }, ordinal(r[k("off_rank")]))),
-        h("td", { class: "num" }, fmt1(r[k("def")]), h("span", { class: "rk" }, ordinal(r[k("def_rank")]))),
-        h("td", { class: "num" }, signed(r[k("v_off")]), h("span", { class: "rk" }, ordinal(r[k("v_off_rank")]))),
-        h("td", { class: "num" }, signed(r[k("v_def")]), h("span", { class: "rk" }, ordinal(r[k("v_def_rank")]))),
+        h("td", { class: "num" }, fmt1(r[k("off")]), rkSpan(r[k("off_rank")])),
+        h("td", { class: "num" }, fmt1(r[k("def")]), rkSpan(r[k("def_rank")])),
+        h("td", { class: "num" }, signed(r[k("v_off")]), rkSpan(r[k("v_off_rank")])),
+        h("td", { class: "num" }, signed(r[k("v_def")]), rkSpan(r[k("v_def_rank")])),
         h("td", { class: "num" }, fmt1(r.off_win_pct)),
         h("td", { class: "num" }, fmt1(r.def_win_pct)),
-        h("td", { class: "num muted" }, fmt1(r.coach), h("span", { class: "rk" }, ordinal(r.coach_rank))),
+        h("td", { class: "num muted" }, fmt1(r.coach), rkSpan(r.coach_rank)),
         h("td", {}, sparkline(r.spark)),
         anyLive ? h("td", { class: `num ${r.live_change > 0 ? "delta-up" : r.live_change < 0 ? "delta-down" : "muted"}` },
           Math.abs(r.live_change || 0) >= 0.05 ? signed(r.live_change) : "") : null);
@@ -1039,12 +1045,12 @@ function glossarySections(sm) {
       ["Net", "Offense plus defense, each measured above the league average. The headline rating on the board."],
       ["Spread", `Net rating turned into points: how much better than an average team on a neutral field (about ${met.pts_per_100_elo.toFixed(0)} points per 100 Elo). On the board +7 means 7 points better; on game cards it's written like a betting line, so −4.5 means favored by 4.5.`],
       ["Off / Def win %", "Share of plays won this season, ties counting half. Raw numbers, not adjusted for opponents; the ratings are."],
-      ["Rank", `Position among the ${sm.ratings.length} rated teams for that rating (1st is best).`],
+      ["Rank", `Position among the ${sm.ratings.filter((r) => !r.pooled).length} rated teams for that rating (1st is best).`],
       ["Pregame chance", "The chance a team wins a game, from the ratings going into it and home field."],
       ["Picks the winner", `How often the higher-rated team (counting home field) won, since ${met.from_season}: ${met.game_pick_pct.toFixed(1)}%. Always picking the home team wins ${met.home_win_pct.toFixed(1)}%.`],
       ["Coaching staff rating ⚠", "Elo for each team's staff, from penalties, two-point tries and early timeouts. Disclaimer: it will suck. Players commit the penalties and these events are a thin slice of coaching."],
       ["Head coach", college() ? "The current head coach from ESPN." : "The current head coach from ESPN (nflverse's coach names can lag a change)."],
-      ...(college() ? [["FCS", "Every opponent outside FBS shares one rating, \"FCS\". It plays a few games a week against FBS teams, so it's rated like a team but left out of the table and ranks."],
+      ...(college() ? [["FCS", "Every opponent outside FBS shares one rating, \"FCS\". It plays a few games a week against FBS teams, so it's rated like a team. It's listed on the board (the striped row) so you can see which FBS teams rate below it, but it's never ranked and doesn't count toward the averages."],
         ["Conference", "The conference filter on the board, seasons and charts uses each school's current conference."]] : []),
     ]],
     ["V-City", [
