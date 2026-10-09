@@ -17,33 +17,36 @@ road teams get flagged more; at neutral sites their baseline is a coin flip.
 import numpy as np
 import pandas as pd
 
+from .rules import DEFAULT_RULES, Rules
+
 HOME_FRAMED = ("penalty", "timeout")
 
 
-def coach_events(pbp: pd.DataFrame, include_postseason: bool = True) -> pd.DataFrame:
+def coach_events(pbp: pd.DataFrame, include_postseason: bool = True, rules: Rules = DEFAULT_RULES) -> pd.DataFrame:
     if not include_postseason:
         pbp = pbp[pbp["season_type"] == "REG"]
+    none = pbp.iloc[0:0]
 
-    pen = pbp[(pbp["penalty"] == 1) & pbp["penalty_team"].notna()].copy()
+    pen = (pbp[(pbp["penalty"] == 1) & pbp["penalty_team"].notna()] if rules.penalties else none).copy()
     pen["event"] = "penalty"
     pen["y"] = (pen["penalty_team"] == pen["away_team"]).astype(float)
 
-    to = pbp[
+    to = (pbp[
         (pbp["timeout"] == 1)
         & pbp["timeout_team"].notna()
-        & (pbp["half_seconds_remaining"] > 120)
-    ].copy()
+        & (pbp["half_seconds_remaining"] > rules.timeout_seconds)
+    ] if rules.timeouts else none).copy()
     to["event"] = "timeout"
     to["y"] = (to["timeout_team"] == to["away_team"]).astype(float)
 
     for df in (pen, to):
         df["att_team"], df["def_team"] = df["home_team"], df["away_team"]
 
-    tp = pbp[
+    tp = (pbp[
         (pbp["two_point_attempt"] == 1)
         & pbp["two_point_conv_result"].isin(["success", "failure"])
         & pbp["posteam"].notna()
-    ].copy()
+    ] if rules.two_point else none).copy()
     tp["event"] = "two_point"
     tp["y"] = (tp["two_point_conv_result"] == "success").astype(float)
     tp["att_team"], tp["def_team"] = tp["posteam"], tp["defteam"]

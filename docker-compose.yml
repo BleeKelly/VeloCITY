@@ -6,12 +6,32 @@ services:
     image: ${VELOCITY_IMAGE:-velocity:latest}
     container_name: velocity
     restart: unless-stopped
-    ports:
-      - "8097:8097"
+    user: "${VELOCITY_USER:-1000:1000}"
     environment:
       - TZ=America/New_York
-    user: "${VELOCITY_USER:-1000:1000}"
+      - VELOCITY_PORT=${VELOCITY_PORT:-8097}              # public site
+      - VELOCITY_ADMIN_PORT=${VELOCITY_ADMIN_PORT:-8098}  # rules admin; keep it off the internet
+      - VELOCITY_ADMIN_PASSWORD=${VELOCITY_ADMIN_PASSWORD:-}  # optional: require a password for admin
+    ports:
+      - "${VELOCITY_PORT:-8097}:${VELOCITY_PORT:-8097}"
+      - "${VELOCITY_ADMIN_PORT:-8098}:${VELOCITY_ADMIN_PORT:-8098}"
     volumes:
-      # Parquet cache (raw/) and CSV output (output/). Set VELOCITY_DATA in .env on a server.
+      # Parquet cache (raw/), CSV output (output/) and settings.json. Set VELOCITY_DATA in .env on a server.
       - ${VELOCITY_DATA:-./store}:/data
-    command: ["velocity", "serve", "--host", "0.0.0.0", "--port", "8097", "--rebuild-hours", "6", "12"]
+    command: ["velocity", "serve", "--host", "0.0.0.0", "--rebuild-hours", "6", "12"]
+
+  # Optional: checks the registry and restarts `velocity` when a new image is published.
+  # Turn on with COMPOSE_PROFILES=auto-update. Needs the Docker socket, but only ever touches
+  # the velocity service. The app folder is mounted at the same path so compose sees the same config.
+  updater:
+    image: docker:29.5.1-cli
+    container_name: velocity-updater
+    restart: unless-stopped
+    profiles: ["auto-update"]
+    working_dir: ${VELOCITY_APP_DIR:-/app}
+    environment:
+      - INTERVAL=${VELOCITY_UPDATE_INTERVAL:-900}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${VELOCITY_APP_DIR:-.}:${VELOCITY_APP_DIR:-/app}:ro
+    entrypoint: ["sh", "deploy/auto-update.sh"]

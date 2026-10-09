@@ -118,8 +118,9 @@ def select_plays(pbp: pd.DataFrame, cfg: PlayConfig) -> pd.DataFrame:
     # have their own play types and are left out. Two-point tries (no down) and any play
     # with a penalty flag go to the coaching rating instead.
     scrimmage = pbp["play_type"].isin(["pass", "run"]) & pbp["down"].notna() & pbp["yards_gained"].notna()
+    punts = pbp["play_type"] == "punt" if cfg.rules.punt != "exclude" else False
     keep = (
-        (scrimmage | (pbp["play_type"] == "punt"))
+        (scrimmage | punts)
         & pbp["posteam"].notna()
         & pbp["defteam"].notna()
         & (pbp["penalty"].fillna(0) == 0)
@@ -131,7 +132,7 @@ def select_plays(pbp: pd.DataFrame, cfg: PlayConfig) -> pd.DataFrame:
         keep &= pbp["wp"].isna() | pbp["wp"].between(lo, hi)
 
     plays = pbp[keep].copy()
-    plays["y"] = play_score(plays)
+    plays["y"] = play_score(plays, cfg.rules)
     plays["att_team"], plays["def_team"] = plays["posteam"], plays["defteam"]
     plays["att_unit"], plays["def_unit"], plays["kind"] = OFF, DEF, PLAY
     return plays
@@ -141,7 +142,7 @@ def prepare(pbp: pd.DataFrame, cfg: PlayConfig, baseline: Baseline | None = None
             teams: list[str] | None = None) -> Events:
     """Turn play-by-play into rated events. Pass `baseline` and `teams` from history for live games."""
     plays = select_plays(pbp, cfg)
-    coach = coach_events(pbp, cfg.include_postseason)
+    coach = coach_events(pbp, cfg.include_postseason, cfg.rules)
     coach["att_unit"], coach["def_unit"], coach["kind"] = COACH, COACH, COACHING
 
     baseline = baseline or Baseline.fit(plays, coach)

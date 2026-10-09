@@ -1,4 +1,7 @@
-"""Home-server mode: keep ratings current and serve the web UI and a JSON API.
+"""Server mode: keep ratings current and serve the web UI and a JSON API.
+
+Two ports: the public site (ratings, teams, games) and an admin site for editing the scoring
+rules and model settings. Saving settings rescores every season in the background.
 
 History is rebuilt from nflverse at startup and at REBUILD_HOURS each day (Eastern), once the
 overnight nflverse update has landed. While games are on, ESPN's live feed is polled and the
@@ -6,7 +9,9 @@ history ratings are carried forward through the live plays; those are provisiona
 game shows up in nflverse.
 """
 
+import base64
 import gzip
+import hmac
 import json
 import threading
 import time
@@ -26,6 +31,9 @@ from .coaching import __doc__ as COACHING_DOC
 from .config import EloConfig, PlayConfig
 from .model import DEF, OFF, UNITS, EloState, Events, game_history, prepare, run_elo
 from .pipeline import SEASON_ONLY, build, game_predictions, home_edge, ratings_table, win_prob, write_outputs
+from .rules import Rules
+from .settings import Settings, preview, score_plays
+from .settings import save as save_settings
 
 WEB = resources.files("velocity") / "web"
 EVENTS_DIR = data.OUTPUT_DIR / "events"
@@ -76,11 +84,14 @@ def season_events(season: int, built_at: str) -> pd.DataFrame:
 
 
 class State:
-    def __init__(self, play_cfg: PlayConfig, elo_cfg: EloConfig, rebuild_hours: list[int], live_enabled: bool,
-                 decay_params=None):
-        self.play_cfg, self.elo_cfg, self.decay_params = play_cfg, elo_cfg, decay_params
+    def __init__(self, base_play_cfg: PlayConfig, settings: Settings, rebuild_hours: list[int], live_enabled: bool):
+        self.base_play_cfg = base_play_cfg
+        self.apply_settings(settings)
         self.rebuild_hours, self.live_enabled = rebuild_hours, live_enabled
-        self.lock = threading.Lock()
+        self.lock = threading.Lock()          # guards the snapshot swap and reads of it
+        self.build_lock = threading.Lock()    # one rebuild at a time; later requests queue behind it
+        self._sample: pd.DataFrame | None = None
+        self.public_port: int | None = None
         self.snap: dict[str, Snapshot] = {}
         self.live: dict[str, dict] = {}           # variant -> live events/result/games/history
         self.live_events = pd.DataFrame()
@@ -90,16 +101,43 @@ class State:
         self.coaches: dict[str, str] = {}
         self.status = {"built_at": None, "live_at": None, "building": False, "error": None}
 
+    # ---- settings -------------------------------------------------------------------------
+
+    def apply_settings(self, settings: Settings) -> None:
+        self.settings = settings
+        self.play_cfg = settings.play_config(self.base_play_cfg)
+        self.elo_cfg = settings.elo_config()
+        self.decay_params = settings.decay_params()
+        self.wp_range = settings.garbage_wp
+
+    def change_settings(self, settings: Settings) -> None:
+        """Save, then rescore everything in the background with the new settings."""
+        save_settings(settings)
+        self.apply_settings(settings)
+        self.status["building"] = True
+        threading.Thread(target=self.rebuild, kwargs={"refresh": False}, daemon=True).start()
+
+    def sample(self) -> pd.DataFrame:
+        """The last complete season, for previewing rule changes."""
+        if self._sample is None:
+            self._sample = data.load_seasons([data.current_season() - 1])
+        return self._sample
+
     # ---- building -------------------------------------------------------------------------
 
-    def rebuild(self) -> None:
+    def rebuild(self, refresh: bool = True) -> None:
+        with self.build_lock:
+            self._rebuild(refresh)
+
+    def _rebuild(self, refresh: bool) -> None:
         self.status["building"] = True
         try:
             seasons = list(range(data.FIRST_SEASON, data.current_season() + 1))
-            try:
-                data.download(seasons[-1], refresh=True)
-            except OSError as e:  # offline: rate what's cached
-                print(f"could not refresh {seasons[-1]}: {e}")
+            if refresh:
+                try:
+                    data.download(seasons[-1], refresh=True)
+                except OSError as e:  # offline: rate what's cached
+                    print(f"could not refresh {seasons[-1]}: {e}")
             pbp = data.load_seasons(seasons)
             try:
                 self.teams_meta = live.team_meta()
@@ -109,7 +147,7 @@ class State:
                     print(f"head coaches updated from ESPN: {', '.join(fixed)}")
             except (OSError, KeyError, ValueError) as e:
                 print(f"could not load teams/coaches from ESPN: {e}")
-            runs = build(pbp, self.play_cfg, self.elo_cfg, decay_params=self.decay_params)
+            runs = build(pbp, self.play_cfg, self.elo_cfg, wp_range=self.wp_range, decay_params=self.decay_params)
             del pbp
             write_outputs(runs, data.OUTPUT_DIR)
 
@@ -233,6 +271,7 @@ class State:
             "scoreboard": self.week_games(),
             "first_season": data.FIRST_SEASON,
             "decay": self.decay_params is not None,
+            "settings": self.settings.to_dict(),
             "coach_disclaimer": COACH_DISCLAIMER,
         }
 
@@ -362,39 +401,54 @@ class State:
                 "updated": self.status["built_at"]}
 
 
+class BaseHandler(BaseHTTPRequestHandler):
+    def log_message(self, fmt, *args):  # keep container logs to errors
+        pass
+
+    def send(self, code: int, body: bytes, ctype: str, headers: dict | None = None) -> None:
+        gz = len(body) > 1024 and "gzip" in self.headers.get("Accept-Encoding", "")
+        if gz:
+            body = gzip.compress(body, 5)
+        self.send_response(code)
+        if gz:
+            self.send_header("Content-Encoding", "gzip")
+        for k, v in (headers or {}).items():
+            self.send_header(k, v)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def json(self, obj, code: int = 200) -> None:
+        self.send(code, json.dumps(obj, allow_nan=False, default=str).encode(), "application/json")
+
+    def static(self, name: str) -> bool:
+        f = WEB / name
+        ext = "." + name.rsplit(".", 1)[-1]
+        if "/" not in name and f.is_file() and ext in STATIC_TYPES:
+            self.send(200, f.read_bytes(), STATIC_TYPES[ext])
+            return True
+        return False
+
+    def body(self) -> dict:
+        n = int(self.headers.get("Content-Length") or 0)
+        if n > 1_000_000:
+            raise ValueError("request too large")
+        return json.loads(self.rfile.read(n) or b"{}")
+
+
 def make_handler(state: State):
-    class Handler(BaseHTTPRequestHandler):
-        def log_message(self, fmt, *args):  # keep container logs to errors
-            pass
-
-        def send(self, code: int, body: bytes, ctype: str) -> None:
-            if len(body) > 1024 and "gzip" in self.headers.get("Accept-Encoding", ""):
-                body = gzip.compress(body, 5)
-                self.send_response(code)
-                self.send_header("Content-Encoding", "gzip")
-            else:
-                self.send_response(code)
-            self.send_header("Content-Type", ctype)
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-cache")
-            self.end_headers()
-            self.wfile.write(body)
-
-        def json(self, obj, code: int = 200) -> None:
-            self.send(code, json.dumps(obj, allow_nan=False, default=str).encode(), "application/json")
-
+    class Handler(BaseHandler):
         def do_GET(self):
             url = urlparse(self.path)
             q = {k: v[0] for k, v in parse_qs(url.query).items()}
             parts = [p for p in url.path.split("/") if p]
             try:
-                if not parts or parts[0] in ("team", "game", "games", "season"):
+                if not parts or parts[0] in ("team", "game", "games", "season", "rules"):
                     return self.send(200, (WEB / "index.html").read_bytes(), STATIC_TYPES[".html"])
-                if parts[0] == "static" and len(parts) == 2 and "/" not in parts[1]:
-                    f = WEB / parts[1]
-                    ext = "." + parts[1].rsplit(".", 1)[-1]
-                    if f.is_file() and ext in STATIC_TYPES:
-                        return self.send(200, f.read_bytes(), STATIC_TYPES[ext])
+                if parts[0] == "static" and len(parts) == 2 and self.static(parts[1]):
+                    return
                 if parts[0] != "api":
                     return self.json({"error": "not found"}, 404)
                 if parts[1:] == ["status"]:
@@ -430,11 +484,74 @@ def make_handler(state: State):
     return Handler
 
 
-def serve(host: str, port: int, play_cfg: PlayConfig, elo_cfg: EloConfig, rebuild_hours: list[int],
-          live_enabled: bool, decay_params=None) -> None:
-    state = State(play_cfg, elo_cfg, rebuild_hours, live_enabled, decay_params)
+def make_admin_handler(state: State, password: str | None):
+    """Rules and settings editor. Optional HTTP basic auth (any username) when a password is set."""
+
+    class AdminHandler(BaseHandler):
+        def authorized(self) -> bool:
+            if not password:
+                return True
+            header = self.headers.get("Authorization", "")
+            if header.startswith("Basic "):
+                try:
+                    _, _, given = base64.b64decode(header[6:]).decode().partition(":")
+                except ValueError:
+                    given = ""
+                if hmac.compare_digest(given, password):
+                    return True
+            self.send(401, b'{"error": "password required"}', "application/json",
+                      {"WWW-Authenticate": 'Basic realm="VeloCITY admin"'})
+            return False
+
+        def do_GET(self):
+            if not self.authorized():
+                return
+            parts = [p for p in urlparse(self.path).path.split("/") if p]
+            if not parts:
+                return self.send(200, (WEB / "admin.html").read_bytes(), STATIC_TYPES[".html"])
+            if parts[0] == "static" and len(parts) == 2 and self.static(parts[1]):
+                return
+            if parts == ["api", "settings"]:
+                return self.json({"settings": state.settings.to_dict(), "defaults": Settings().to_dict(),
+                                  "status": state.status, "public_port": state.public_port})
+            if parts == ["api", "status"]:
+                return self.json(state.status)
+            return self.json({"error": "not found"}, 404)
+
+        def do_POST(self):
+            if not self.authorized():
+                return
+            parts = [p for p in urlparse(self.path).path.split("/") if p]
+            try:
+                body = self.body()
+                if parts == ["api", "settings"]:
+                    new = Settings.from_dict(body)
+                    state.change_settings(new)
+                    return self.json({"ok": True, "settings": new.to_dict(), "status": state.status})
+                if parts == ["api", "preview"]:
+                    rules = Rules.from_dict(body.get("rules") or {})
+                    return self.json({"preview": preview(state.sample(), rules),
+                                      "scores": score_plays(body.get("plays") or [], rules)})
+                return self.json({"error": "not found"}, 404)
+            except ValueError as e:
+                return self.json({"error": str(e)}, 400)
+            except Exception as e:
+                traceback.print_exc()
+                return self.json({"error": str(e)}, 500)
+
+    return AdminHandler
+
+
+def serve(host: str, port: int, admin_port: int | None, base_play_cfg: PlayConfig, settings: Settings,
+          rebuild_hours: list[int], live_enabled: bool, admin_password: str | None = None) -> None:
+    state = State(base_play_cfg, settings, rebuild_hours, live_enabled)
+    state.public_port = port
     threading.Thread(target=state.loop, daemon=True).start()
+    if admin_port:
+        admin = ThreadingHTTPServer((host, admin_port), make_admin_handler(state, admin_password))
+        threading.Thread(target=admin.serve_forever, daemon=True).start()
+        print(f"admin on http://{host}:{admin_port} ({'password' if admin_password else 'no password'})")
     httpd = ThreadingHTTPServer((host, port), make_handler(state))
     print(f"serving on http://{host}:{port} (live={'on' if live_enabled else 'off'}, "
-          f"rebuilds at {', '.join(f'{h}:00' for h in rebuild_hours)} ET)")
+          f"rebuilds at {', '.join(f'{h}:00' for h in rebuild_hours)} ET)", flush=True)
     httpd.serve_forever()

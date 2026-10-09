@@ -1,11 +1,14 @@
 import argparse
 import itertools
+import os
 from dataclasses import replace
+from pathlib import Path
 
 import pandas as pd
 
 from . import data
-from .config import GARBAGE_TIME_WP, EloConfig, PlayConfig
+from . import settings as settings_mod
+from .config import EloConfig, PlayConfig
 from .evaluate import summarize
 from .model import prepare, run_elo
 from .pipeline import build, eval_start, ratings_table, write_outputs
@@ -23,7 +26,20 @@ def parse_seasons(text: str) -> list[int]:
     return sorted(seasons)
 
 
-def play_config(args) -> PlayConfig:
+def settings_for(args) -> settings_mod.Settings:
+    """Saved settings (what the admin UI edits), with any command-line overrides on top."""
+    s = settings_mod.load(args.settings)
+    overrides = {attr: getattr(args, flag) for flag, attr in
+                 (("k", "k"), ("regression", "season_regression"), ("k_coach", "k_coach"),
+                  ("coach_regression", "coach_regression")) if getattr(args, flag, None) is not None}
+    if getattr(args, "wp_range", None):
+        overrides["garbage_wp"] = tuple(args.wp_range)
+    if getattr(args, "no_decay", False):
+        overrides["decay"] = False
+    return replace(s, **overrides)
+
+
+def base_play_config(args) -> PlayConfig:
     return PlayConfig(
         include_postseason=not args.no_postseason,
         situational_baseline=not args.no_situational,
@@ -31,16 +47,12 @@ def play_config(args) -> PlayConfig:
     )
 
 
+def play_config(args) -> PlayConfig:
+    return settings_for(args).play_config(base_play_config(args))
+
+
 def elo_config(args) -> EloConfig:
-    return EloConfig(k=args.k, season_regression=args.regression,
-                     k_coach=args.k_coach, coach_regression=args.coach_regression)
-
-
-def decay_params(args):
-    if args.no_decay:
-        return None
-    from .decay import FITTED
-    return FITTED
+    return settings_for(args).elo_config()
 
 
 def print_metrics(label: str, m: dict) -> None:
@@ -70,8 +82,10 @@ def cmd_run(args) -> None:
                 print(f"head coaches updated from ESPN: {', '.join(fixed)}")
         except (OSError, KeyError, ValueError) as e:
             print(f"(could not check head coaches with ESPN: {e})")
-    cfg = elo_config(args)
-    runs = build(pbp, play_config(args), cfg, wp_range=args.wp_range, decay_params=decay_params(args))
+    st = settings_for(args)
+    cfg = st.elo_config()
+    runs = build(pbp, st.play_config(base_play_config(args)), cfg, wp_range=st.garbage_wp,
+                 decay_params=st.decay_params())
     written = write_outputs(runs, data.OUTPUT_DIR, play_log=args.play_log)
 
     latest = runs["all"].events.games.iloc[-1]
@@ -95,7 +109,7 @@ def cmd_run(args) -> None:
 def cmd_tune(args) -> None:
     play_cfg = play_config(args)
     if args.exclude_garbage:
-        play_cfg = replace(play_cfg, wp_filter=tuple(args.wp_range))
+        play_cfg = replace(play_cfg, wp_filter=settings_for(args).garbage_wp)
     events = prepare(data.load_seasons(args.seasons, refresh=args.refresh), play_cfg)
     from_season = eval_start(args.seasons)
     coach = args.unit == "coach"
@@ -144,8 +158,9 @@ def cmd_decay(args) -> None:
 def cmd_serve(args) -> None:
     from .server import serve
 
-    serve(args.host, args.port, play_config(args), elo_config(args), args.rebuild_hours,
-          live_enabled=not args.no_live, decay_params=decay_params(args))
+    serve(args.host, args.port, None if args.no_admin else args.admin_port, base_play_config(args),
+          settings_mod.load(args.settings), args.rebuild_hours, live_enabled=not args.no_live,
+          admin_password=os.environ.get("VELOCITY_ADMIN_PASSWORD") or None)
 
 
 def main() -> None:
@@ -159,25 +174,29 @@ def main() -> None:
                         help=f"e.g. 2016-2026 or 2024 (default: {data.FIRST_SEASON} to current)")
     common.add_argument("--refresh", action="store_true", help="re-download even if cached")
 
-    plays = argparse.ArgumentParser(add_help=False)
-    plays.add_argument("--wp-range", type=float, nargs=2, default=GARBAGE_TIME_WP, metavar=("LO", "HI"),
-                       help="outside this offense win-prob range is garbage time (default: 0.05 0.95)")
-    plays.add_argument("--no-postseason", action="store_true")
-    plays.add_argument("--no-situational", action="store_true", help="ignore down & distance in expectations")
-    plays.add_argument("--no-home-field", action="store_true")
+    # Rules and model settings come from the settings file (edited in the admin UI); flags override.
+    base = argparse.ArgumentParser(add_help=False)
+    base.add_argument("--settings", type=Path, default=data.SETTINGS_FILE,
+                      help=f"settings file with the scoring rules and model settings (default: {data.SETTINGS_FILE})")
+    base.add_argument("--no-postseason", action="store_true")
+    base.add_argument("--no-situational", action="store_true", help="ignore down & distance in expectations")
+    base.add_argument("--no-home-field", action="store_true")
+
+    plays = argparse.ArgumentParser(add_help=False, parents=[base])
+    plays.add_argument("--wp-range", type=float, nargs=2, metavar=("LO", "HI"),
+                       help="outside this offense win-prob range is garbage time (default: from settings)")
     plays.add_argument("--no-decay", action="store_true",
                        help="same off-season regression for every team instead of roster/coach-based decay")
+    plays.add_argument("--k", type=float, help=f"rating points per play (default: from settings, {defaults.k})")
+    plays.add_argument("--regression", type=float, help="fraction of O/D ratings regressed to 1500 between seasons")
+    plays.add_argument("--k-coach", type=float, help="rating points per coaching event")
+    plays.add_argument("--coach-regression", type=float)
 
     p = sub.add_parser("download", parents=[common], help="fetch and cache play-by-play data")
     p.set_defaults(func=cmd_download)
 
     p = sub.add_parser("run", parents=[common, plays],
                        help="compute ratings (all plays + no garbage time) and write CSVs")
-    p.add_argument("--k", type=float, default=defaults.k, help="rating points per play")
-    p.add_argument("--regression", type=float, default=defaults.season_regression,
-                   help="fraction of O/D ratings regressed to 1500 between seasons")
-    p.add_argument("--k-coach", type=float, default=defaults.k_coach, help="rating points per coaching event")
-    p.add_argument("--coach-regression", type=float, default=defaults.coach_regression)
     p.add_argument("--play-log", action="store_true", help="also write every event with expected/delta")
     p.set_defaults(func=cmd_run)
 
@@ -190,22 +209,19 @@ def main() -> None:
 
     p = sub.add_parser("decay", parents=[common, plays], help="off-season decay from roster continuity, age, QB, coach")
     p.add_argument("--fit", action="store_true", help="fit decay parameters by log loss (a few minutes)")
-    p.add_argument("--k", type=float, default=defaults.k)
-    p.add_argument("--regression", type=float, default=defaults.season_regression)
-    p.add_argument("--k-coach", type=float, default=defaults.k_coach)
-    p.add_argument("--coach-regression", type=float, default=defaults.coach_regression)
     p.set_defaults(func=cmd_decay)
 
-    p = sub.add_parser("serve", parents=[plays], help="run the web UI, nightly rebuilds and live game updates")
+    p = sub.add_parser("serve", parents=[base], help="run the web UI, admin UI, nightly rebuilds and live updates")
     p.add_argument("--host", default="0.0.0.0")
-    p.add_argument("--port", type=int, default=8097)
+    p.add_argument("--port", type=int, default=int(os.environ.get("VELOCITY_PORT", 8097)),
+                   help="public site port (env VELOCITY_PORT, default 8097)")
+    p.add_argument("--admin-port", type=int, default=int(os.environ.get("VELOCITY_ADMIN_PORT", 8098)),
+                   help="rules/settings admin port (env VELOCITY_ADMIN_PORT, default 8098); "
+                        "set VELOCITY_ADMIN_PASSWORD to require a password")
+    p.add_argument("--no-admin", action="store_true", help="don't serve the admin UI")
     p.add_argument("--rebuild-hours", type=int, nargs="+", default=[6, 12],
                    help="Eastern hours to rebuild from nflverse (default: 6 12)")
     p.add_argument("--no-live", action="store_true", help="skip ESPN live updates")
-    p.add_argument("--k", type=float, default=defaults.k)
-    p.add_argument("--regression", type=float, default=defaults.season_regression)
-    p.add_argument("--k-coach", type=float, default=defaults.k_coach)
-    p.add_argument("--coach-regression", type=float, default=defaults.coach_regression)
     p.set_defaults(func=cmd_serve)
 
     args = parser.parse_args()

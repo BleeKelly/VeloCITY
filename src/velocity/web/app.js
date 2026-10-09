@@ -284,12 +284,14 @@ function renderChrome() {
   const pill = $("#status-pill");
   if (!sm) return;
   const liveN = sm.scoreboard.filter((g) => g.state === "in").length;
-  pill.replaceChildren(
+  pill.replaceChildren(...[
+    sm.status.building ? h("span", { class: "spinner small" }) : null,
+    sm.status.building ? "Rescoring… · " : "",
     liveN ? h("span", { class: "live-dot", "aria-hidden": "true" }) : null,
     liveN ? `${liveN} live · ` : "",
     h("span", { class: "long" }, `Through ${sm.status.through.season} week ${sm.status.through.week}`),
     h("span", { class: "short" }, `${sm.status.through.season} W${sm.status.through.week}`),
-  );
+  ].filter(Boolean));
   pill.title = `Rebuilt ${sm.status.built_at || "–"}${sm.status.live_at ? ` · live checked ${sm.status.live_at}` : ""}`;
 
   const sel = $("#team-select");
@@ -738,6 +740,52 @@ async function viewSeason(app, year) {
   document.title = `${data.season} season · VeloCITY`;
 }
 
+function describeThreshold(t) {
+  if (t.kind === "off") return null;
+  if (t.kind === "share") return t.value === 1 ? "converts a first down" : `gains at least ${+(t.value * 100).toFixed(1)}% of the yards to go`;
+  if (t.kind === "yards") return `gains at least ${t.value} yards`;
+  return t.value === 0 ? "converts a first down" : `ends within ${t.value} yard${t.value === 1 ? "" : "s"} of a first down`;
+}
+
+function viewRules(app) {
+  setNav("rules");
+  const sm = store.summary, set = sm.settings, r = set.rules, m = set.model;
+  const names = { 1: "1st down", 2: "2nd down", 3: "3rd down", 4: "4th down, going for it" };
+  const punt = { win: "a win for the offense", tie: "a tie", loss: "a loss for the offense", exclude: "not counted" }[r.punt];
+  app.replaceChildren(
+    h("div", { class: "page-head" }, h("div", {}, h("h1", {}, "Rules"),
+      h("div", { class: "sub" }, "Every run, pass and punt is a one-play game between an offense and a defense: the offense wins (1), ties (½) or loses (0)."))),
+    h("div", { class: "grid-2" },
+      h("div", { class: "card" }, h("h2", {}, "Scoring a play"),
+        h("div", { class: "table-wrap" }, h("table", {},
+          h("thead", {}, h("tr", {}, h("th", { class: "left" }, "Down"), h("th", { class: "left" }, "Win if the offense…"), h("th", { class: "left" }, "Tie if it…"))),
+          h("tbody", {}, Object.entries(names).map(([d, label]) => h("tr", {},
+            h("td", { class: "left" }, h("strong", {}, label)),
+            h("td", { class: "left" }, describeThreshold(r.downs[d].win) || "never"),
+            h("td", { class: "left" }, describeThreshold(r.downs[d].tie) || "no ties")))))),
+        h("ul", { class: "rule-list", style: { marginTop: "12px" } },
+          h("li", {}, `A punt is ${punt}.`),
+          h("li", {}, r.turnover_loss ? "A turnover is always a loss." : "Turnovers are scored by the yards gained before them."),
+          h("li", {}, "Plays with an accepted penalty, two-point tries, kneels, spikes, field goals and kickoffs don't count for offense or defense."))),
+      h("div", {},
+        h("div", { class: "card" }, h("h2", {}, "Coaching staff ⚠"),
+          h("ul", { class: "rule-list" },
+            r.penalties ? h("li", {}, "Every accepted penalty is a loss for the flagged team's staff.") : null,
+            r.timeouts ? h("li", {}, `A charged timeout with more than ${r.timeout_seconds} seconds left in the half is a loss for the staff that called it.`) : null,
+            r.two_point ? h("li", {}, "A two-point try is a win for the offense's staff on success, the defense's on a stop.") : null,
+            !(r.penalties || r.timeouts || r.two_point) ? h("li", {}, "No coaching events are counted.") : null),
+          h("div", { class: "disclaimer" }, h("span", {}, sm.coach_disclaimer))),
+        h("div", { class: "card" }, h("h2", {}, "How ratings move"),
+          h("ul", { class: "rule-list" },
+            h("li", {}, `Each play moves the offense and defense ratings by up to ${m.k} Elo (K); coaching events by up to ${m.k_coach}.`),
+            h("li", {}, "The expected result accounts for down & distance and home field, so ratings measure play above what the situation predicts."),
+            h("li", {}, m.decay ? "Between seasons, each team's ratings are pulled toward average based on returning snaps, lineup age and head-coach changes."
+              : `Between seasons, offense and defense ratings are pulled ${Math.round(m.season_regression * 100)}% of the way back to average (coaching ${Math.round(m.coach_regression * 100)}%).`),
+            h("li", {}, `"No garbage time" drops plays when the offense's win chance is below ${Math.round(m.garbage_wp[0] * 100)}% or above ${Math.round(m.garbage_wp[1] * 100)}%.`))))),
+  );
+  document.title = "Rules · VeloCITY";
+}
+
 function viewPreview(app, g) {
   app.replaceChildren(
     h("div", { class: "card", style: { marginTop: "18px" } },
@@ -771,6 +819,7 @@ async function render(opts = {}) {
     else if (parts[0] === "game" && parts[1]) await viewGame(app, parts[1]);
     else if (parts[0] === "games") await viewGames(app, url.searchParams);
     else if (parts[0] === "season") await viewSeason(app, parts[1] ? +parts[1] : null);
+    else if (parts[0] === "rules") viewRules(app);
     else { viewRatings(app, url.searchParams); document.title = "VeloCITY"; }
     if (opts.keepScroll) scrollTo(0, scroll); else if (!opts.soft) scrollTo(0, 0);
   } catch (e) {

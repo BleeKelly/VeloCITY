@@ -1,4 +1,6 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+from .rules import DEFAULT_RULES, Rules
 
 # Garbage time = the offense's win probability (nflverse model) is outside this range.
 GARBAGE_TIME_WP = (0.05, 0.95)
@@ -6,7 +8,9 @@ GARBAGE_TIME_WP = (0.05, 0.95)
 
 @dataclass(frozen=True)
 class PlayConfig:
-    """Which plays count. How a play is scored lives in outcomes.py."""
+    """Which plays count and how they're scored (thresholds in rules.py, logic in outcomes.py)."""
+
+    rules: Rules = field(default=DEFAULT_RULES)
 
     # Keep plays only when the offense's win probability is in this range.
     # None keeps every play, garbage time included.

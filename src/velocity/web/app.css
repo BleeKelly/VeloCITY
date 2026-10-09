@@ -335,3 +335,51 @@ td.rank { color: var(--muted); width: 32px; font-variant-numeric: tabular-nums; 
 .multiple-head:hover strong { text-decoration: underline; }
 .team-hero .title .head-tools { margin-left: auto; }
 @media (max-width: 760px) { .team-hero .title { flex-wrap: wrap; } .team-hero .title .head-tools { margin-left: 0; } }
+
+/* ---- rules admin ---- */
+.admin-grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.admin-grid > * { min-width: 0; }
+@media (max-width: 960px) { .admin-grid { grid-template-columns: minmax(0, 1fr); } }
+.admin .card h2 { margin-bottom: 4px; }
+.sticky { position: sticky; top: 72px; }
+.rules-table td { vertical-align: middle; white-space: normal; }
+.threshold { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.threshold .select { max-width: 100%; }
+.num-input { width: 86px; font-variant-numeric: tabular-nums; }
+.unit { color: var(--ink-2); font-size: 13px; }
+.field { display: grid; gap: 4px; min-width: 0; }
+.field-label { font-size: 13px; font-weight: 600; color: var(--ink-2); }
+.field-hint { display: block; font-size: 12px; color: var(--muted); font-weight: 400; }
+.field-row { display: flex; flex-wrap: wrap; gap: 12px 20px; margin-top: 14px; align-items: flex-start; }
+.field-row.tight { margin-top: 8px; gap: 10px; }
+.field-row.tight .num-input { width: 74px; }
+.check { display: flex; align-items: flex-start; gap: 10px; margin-top: 12px; cursor: pointer; }
+.check input { margin-top: 3px; width: 16px; height: 16px; accent-color: var(--accent); }
+.admin-actions { display: flex; justify-content: flex-end; margin: 4px 0 90px; }
+.btn { border: 1px solid var(--border); background: var(--surface); border-radius: 10px; padding: 8px 14px; font-weight: 600; cursor: pointer; }
+.btn:hover { background: var(--surface-2); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.primary:hover { filter: brightness(1.08); }
+.btn:disabled { opacity: 0.6; cursor: progress; }
+.btn.ghost { background: transparent; }
+.savebar {
+  position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 30;
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: center;
+  background: var(--surface); border: 1px solid var(--border); box-shadow: var(--shadow); border-radius: 14px;
+  padding: 10px 12px 10px 16px; max-width: calc(100vw - 32px);
+}
+.savebar[hidden] { display: none; }
+.save-error { color: var(--bad); font-size: 13px; max-width: 420px; }
+.save-error:empty { display: none; }
+.try-result { display: flex; align-items: center; gap: 10px; margin-top: 12px; font-weight: 600; }
+.res-badge.big { width: 40px; height: 32px; font-size: 16px; }
+.dist { display: grid; gap: 12px; }
+.dist-head { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 4px; }
+.dist-bar { display: flex; gap: 2px; height: 10px; }
+.dist-bar span { border-radius: 4px; min-width: 3px; }
+.dist-labels { display: flex; gap: 14px; font-size: 12px; color: var(--ink-2); margin-top: 4px; font-variant-numeric: tabular-nums; }
+.spinner.small { width: 12px; height: 12px; border-width: 2px; display: inline-block; vertical-align: -2px; margin-right: 4px; }
+
+/* ---- public rules page ---- */
+.rule-list { margin: 0; padding-left: 18px; color: var(--ink-2); }
+.rule-list li { margin: 4px 0; }
