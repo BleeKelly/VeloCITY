@@ -102,8 +102,9 @@ button, select { font: inherit; color: inherit; }
 .wordmark b { font-weight: 850; font-size: 1.08em; letter-spacing: -0.01em; color: #8a5530; }  /* the weasel's brown */
 .brand-mark { width: 34px; height: 34px; border-radius: 9px; box-shadow: 0 0 0 1px var(--border); transition: transform 0.2s ease; }
 .brand:hover .brand-mark { transform: rotate(-8deg) scale(1.06); }
-.nav { display: flex; align-items: center; gap: 4px; }
-.nav a { padding: 6px 12px; border-radius: 999px; color: var(--ink-2); font-weight: 500; }
+.nav { display: flex; align-items: center; gap: 4px; position: relative; }
+.team-pick { position: relative; }
+.nav a { padding: 6px 12px; border-radius: 999px; color: var(--ink-2); font-weight: 500; white-space: nowrap; }
 .nav a:hover { background: var(--surface-2); color: var(--ink); }
 .nav a[aria-current="page"] { background: var(--ink); color: var(--plane); }
 .team-pick select {
@@ -311,6 +312,20 @@ td.rank { color: var(--muted); width: 32px; font-variant-numeric: tabular-nums; 
 .footer { max-width: 1240px; margin: 0 auto; padding: 0 16px 32px; color: var(--muted); font-size: 12px; }
 .loading-fade { opacity: 0.55; transition: opacity 0.2s; }
 
+/* ---- narrower screens: tighten the top bar, then give the nav its own scrolling row ---- */
+@media (max-width: 1080px) {
+  .topbar { gap: 12px; }
+  .nav a { padding: 6px 9px; }
+  .pill .long { display: none; }
+  .pill .short { display: inline; }
+}
+@media (max-width: 900px) {
+  .topbar { flex-wrap: wrap; row-gap: 6px; }
+  .nav { order: 3; width: 100%; overflow-x: auto; scrollbar-width: none; flex-wrap: nowrap; }
+  .nav::-webkit-scrollbar { display: none; }
+  .nav .team-pick { flex: 0 0 auto; }
+}
+
 /* ---- phones ---- */
 .pill .short { display: none; }
 @media (max-width: 640px) {
@@ -409,3 +424,26 @@ tr.runner-up td:first-child { box-shadow: inset 3px 0 0 var(--silver); }
 .champ-tag.silver { background: color-mix(in srgb, var(--silver) 22%, transparent); }
 .chart .sb-mark.silver { fill: var(--silver); }
 .hero-badges { display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* ---- Elo x V-City scatter ---- */
+.scatter .baseline.zero { stroke: var(--axis); stroke-width: 1.5; }
+.scatter .quad-label { fill: var(--muted); font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
+.scatter .axis-title { fill: var(--ink-2); font-size: 12px; font-weight: 600; }
+.scatter .team-dot { cursor: pointer; transition: opacity 0.15s; }
+.scatter .team-dot .dot-bg { fill: var(--surface); stroke: var(--border); stroke-width: 1; }
+.scatter .team-dot:hover .dot-bg, .scatter .team-dot:focus .dot-bg { stroke: var(--ink-2); stroke-width: 2; }
+.scatter .team-dot:focus { outline: none; }
+.scatter .team-dot.gold .dot-bg { stroke: var(--gold); stroke-width: 3; }
+.scatter .team-dot.silver .dot-bg { stroke: var(--silver); stroke-width: 3; }
+.scatter .team-dot.dim { opacity: 0.3; }
+.scatter .dot-abbr { font-size: 9px; font-weight: 700; fill: var(--ink); }
+.scatter .trail { fill: none; stroke: var(--ink-2); stroke-width: 1.5; stroke-linejoin: round; opacity: 0.8; }
+.scatter .trail-dot { fill: var(--ink-2); stroke: var(--surface); stroke-width: 1.5; }
+.scatter .trail-label { fill: var(--muted); font-size: 11px; }
+.chart-table { margin-top: 8px; font-size: 13px; }
+.chart-table summary { cursor: pointer; color: var(--ink-2); }
+.wt-chip { display: inline-block; margin-left: 4px; padding: 0 5px; border-radius: 5px; font-size: 10px; font-weight: 700;
+  color: var(--ink-2); background: var(--surface-2); vertical-align: middle; }
+.v-mark { margin-left: 3px; font-size: 13px; vertical-align: middle; cursor: help; }
+.plays td.res { width: auto; white-space: nowrap; }
+.mini-h { font-size: 13px; font-weight: 700; color: var(--ink-2); margin: 16px 0 0; text-transform: uppercase; letter-spacing: 0.05em; }

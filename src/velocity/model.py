@@ -1,9 +1,11 @@
-"""Play-by-play Elo.
+"""Play-by-play Elo, and V-City.
 
 Every event is a one-event game between two rating "slots", one per (team, unit):
-  - offense vs defense on each run, pass and punt, scored by outcomes.py
+  - offense vs defense on each run, pass, punt and field goal, scored by outcomes.py
   - coaching staff vs coaching staff on penalties, two-point tries and early timeouts,
     see coaching.py
+  - V-City, on every run and pass: offense big plays vs the defense's big-play prevention
+    (boom), and defensive havoc vs the offense's ball security and protection (havoc)
 Special teams can be added later as more units with their own events, without changing
 the update loop.
 """
@@ -15,11 +17,15 @@ import pandas as pd
 
 from .coaching import coach_events, neutral_coin_flip
 from .config import EloConfig, PlayConfig
-from .outcomes import play_score
+from .outcomes import boom_score, havoc_score, play_score, play_weight
 
-UNITS = ("off", "def", "coach")
-OFF, DEF, COACH = range(len(UNITS))
-PLAY, COACHING = 0, 1  # event kinds
+UNITS = ("off", "def", "coach", "boom", "boom_def", "havoc", "havoc_off")
+OFF, DEF, COACH, BOOM, BOOM_DEF, HAVOC, HAVOC_OFF = range(len(UNITS))
+PLAY, COACHING, VBOOM, VHAVOC = 0, 1, 2, 3  # event kinds
+ZONE_BINS = [0, 10, 20, 40, 60, 80, 100]    # yards from the end zone
+FG_BINS = [0, 29, 39, 49, 99]               # kick distance
+ENGINE_COLUMNS = ["season", "game_date", "game_id", "play_id", "kind", "att_team", "def_team",
+                  "att_unit", "def_unit", "y", "base", "weight"]
 
 YTG_BINS = [0, 1, 3, 6, 9, 10, 15, 99]
 YTG_LABELS = ["1", "2-3", "4-6", "7-9", "10", "11-15", "16+"]
@@ -28,8 +34,9 @@ GAME_COLUMNS = [
     "game_id", "season", "season_type", "week", "game_date", "location",
     "home_team", "away_team", "home_score", "away_score", "home_coach", "away_coach",
 ]
-# The ratings each game snapshots before and after: home off/def/coach, then away.
-SNAPSHOT = [("home", OFF), ("home", DEF), ("home", COACH), ("away", OFF), ("away", DEF), ("away", COACH)]
+# The ratings each game snapshots before and after: every home unit, then every away unit.
+SNAPSHOT = [(side, unit) for side in ("home", "away") for unit in range(len(UNITS))]
+SNAP = {(side, UNITS[unit]): i for i, (side, unit) in enumerate(SNAPSHOT)}  # ("home", "off") -> column
 
 
 def slot(team_idx, unit):
@@ -41,11 +48,38 @@ def _log10_odds(p):
     return np.log10(p / (1 - p))
 
 
-def _situation(df: pd.DataFrame) -> pd.Series:
-    """Down & distance cell; punts get their own so 4th-down tries are judged only against each other."""
+def _down_distance(df: pd.DataFrame) -> pd.Series:
     ytg = pd.cut(df["ydstogo"], YTG_BINS, labels=YTG_LABELS).astype(str)
-    cell = df["down"].fillna(0).astype(int).astype(str) + "/" + ytg
-    return cell.where(df["play_type"] != "punt", "punt")
+    return df["down"].fillna(0).astype(int).astype(str) + "/" + ytg
+
+
+def _situation(df: pd.DataFrame) -> pd.Series:
+    """Down & distance cell. Punts get their own, and field goals one per kick distance, so 4th-down
+    tries are judged only against each other."""
+    cell = _down_distance(df).where(df["play_type"] != "punt", "punt")
+    if "yardline_100" in df:
+        kick = pd.cut(df["yardline_100"].fillna(20) + 17, FG_BINS).astype(str)
+        cell = cell.where(df["play_type"] != "field_goal", "fg/" + kick)
+    return cell
+
+
+def _boom_cell(df: pd.DataFrame) -> pd.Series:
+    """Room to run matters for big plays: field zone x down."""
+    yardline = df["yardline_100"].fillna(50) if "yardline_100" in df else pd.Series(50, index=df.index)
+    zone = pd.cut(yardline, ZONE_BINS).astype(str)
+    return zone + "/" + df["down"].fillna(0).astype(int).astype(str)
+
+
+def _cell_odds(y: pd.Series, season: pd.Series, cell: pd.Series) -> tuple[dict, dict]:
+    overall = _log10_odds(y.mean())
+    return (_log10_odds(y.groupby(season).mean()).to_dict(),
+            (_log10_odds(y.groupby(cell).mean()) - overall).to_dict())
+
+
+def _apply(df: pd.DataFrame, level: dict, cells: dict, cell: pd.Series) -> np.ndarray:
+    latest = level[max(level)] if level else 0.0
+    return (df["season"].map(level).fillna(latest).to_numpy(float)
+            + cell.map(cells).fillna(0).to_numpy(float))
 
 
 def _home_sign(df: pd.DataFrame) -> np.ndarray:
@@ -65,19 +99,32 @@ class Baseline:
     situation: dict[str, float]
     hfa: float
     coach: dict[str, float]
+    boom_level: dict = field(default_factory=dict)
+    boom_cells: dict = field(default_factory=dict)
+    havoc_level: dict = field(default_factory=dict)
+    havoc_cells: dict = field(default_factory=dict)
 
     @classmethod
-    def fit(cls, plays: pd.DataFrame, coach: pd.DataFrame) -> "Baseline":
+    def fit(cls, plays: pd.DataFrame, coach: pd.DataFrame, vcity: pd.DataFrame) -> "Baseline":
         y = plays["y"]
         overall = _log10_odds(y.mean())
         sign = _home_sign(plays)
         coach = coach[~neutral_coin_flip(coach)]
+        boom_level, boom_cells = _cell_odds(vcity["boom"], vcity["season"], _boom_cell(vcity))
+        havoc_level, havoc_cells = _cell_odds(vcity["havoc"], vcity["season"], _down_distance(vcity))
         return cls(
             season_level=_log10_odds(y.groupby(plays["season"]).mean()).to_dict(),
             situation=(_log10_odds(y.groupby(_situation(plays)).mean()) - overall).to_dict(),
             hfa=float(_log10_odds(y[sign > 0].mean()) - _log10_odds(y[sign < 0].mean())) / 2,
             coach=_log10_odds(coach.groupby("event")["y"].mean()).to_dict(),
+            boom_level=boom_level, boom_cells=boom_cells, havoc_level=havoc_level, havoc_cells=havoc_cells,
         )
+
+    def boom(self, df: pd.DataFrame) -> np.ndarray:
+        return _apply(df, self.boom_level, self.boom_cells, _boom_cell(df))
+
+    def havoc(self, df: pd.DataFrame) -> np.ndarray:
+        return _apply(df, self.havoc_level, self.havoc_cells, _down_distance(df))
 
     def plays(self, df: pd.DataFrame, cfg: PlayConfig) -> np.ndarray:
         latest = self.season_level[max(self.season_level)]  # a live game in a brand-new season
@@ -95,16 +142,19 @@ class Baseline:
 
 @dataclass
 class Events:
-    df: pd.DataFrame        # all events in chronological order, with kind, y and base
+    df: pd.DataFrame        # plays and coaching events in chronological order, with full detail
     teams: list[str]
     games: pd.DataFrame     # one row per game, in order of first event; home_idx / away_idx
+    # Everything below covers every event the engine runs (df's rows plus V-City), in order:
     attacker: np.ndarray    # rating slot trying to win the event (offense / home or offense staff)
     defender: np.ndarray
-    y: np.ndarray           # attacker's score: 1 win, 0.5 tie, 0 loss
+    y: np.ndarray           # attacker's score in [0, 1]
     base: np.ndarray        # baseline log10-odds of an attacker win
-    kind: np.ndarray        # PLAY or COACHING
+    kind: np.ndarray        # PLAY, COACHING, VBOOM or VHAVOC
+    weight: np.ndarray      # K multiplier (situation before the snap)
     game: np.ndarray        # game index per event
     season: np.ndarray
+    core: np.ndarray        # True for events that are rows of df (same order as df)
     baseline: Baseline
 
     @property
@@ -114,13 +164,16 @@ class Events:
 
 
 def select_plays(pbp: pd.DataFrame, cfg: PlayConfig) -> pd.DataFrame:
-    # Runs, passes and punts (a punt is a tie). Kneels, spikes, field goals and kickoffs
-    # have their own play types and are left out. Two-point tries (no down) and any play
-    # with a penalty flag go to the coaching rating instead.
+    # Runs, passes, punts (a punt is a tie) and field goals. Kneels, spikes and kickoffs have
+    # their own play types and are left out. Two-point tries (no down) and any play with a
+    # penalty flag go to the coaching rating instead.
     scrimmage = pbp["play_type"].isin(["pass", "run"]) & pbp["down"].notna() & pbp["yards_gained"].notna()
     punts = pbp["play_type"] == "punt" if cfg.rules.punt != "exclude" else False
+    fgs = False
+    if cfg.rules.field_goals and "field_goal_result" in pbp:
+        fgs = (pbp["play_type"] == "field_goal") & pbp["field_goal_result"].isin(["made", "missed", "blocked"])
     keep = (
-        (scrimmage | punts)
+        (scrimmage | punts | fgs)
         & pbp["posteam"].notna()
         & pbp["defteam"].notna()
         & (pbp["penalty"].fillna(0) == 0)
@@ -133,9 +186,25 @@ def select_plays(pbp: pd.DataFrame, cfg: PlayConfig) -> pd.DataFrame:
 
     plays = pbp[keep].copy()
     plays["y"] = play_score(plays, cfg.rules)
+    plays["weight"] = play_weight(plays, cfg.rules.weights)
+    scrimmage = plays["play_type"].isin(["pass", "run"]).to_numpy()
+    plays["boom"] = np.where(scrimmage, boom_score(plays, cfg.rules.boom), np.nan)
+    plays["havoc"] = np.where(scrimmage, havoc_score(plays, cfg.rules.havoc), np.nan)
     plays["att_team"], plays["def_team"] = plays["posteam"], plays["defteam"]
     plays["att_unit"], plays["def_unit"], plays["kind"] = OFF, DEF, PLAY
     return plays
+
+
+def vcity_events(plays: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Two V-City events per run/pass: offense boom vs defense, defense havoc vs offense."""
+    sc = plays[plays["play_type"].isin(["pass", "run"])]
+    keep = [c for c in ("season", "game_date", "game_id", "play_id", "down", "ydstogo", "yardline_100", "boom", "havoc")
+            if c in sc]
+    boom = sc[keep].assign(y=sc["boom"], att_team=sc["posteam"], def_team=sc["defteam"],
+                           att_unit=BOOM, def_unit=BOOM_DEF, kind=VBOOM, weight=1.0)
+    havoc = sc[keep].assign(y=sc["havoc"], att_team=sc["defteam"], def_team=sc["posteam"],
+                            att_unit=HAVOC, def_unit=HAVOC_OFF, kind=VHAVOC, weight=1.0)
+    return boom, havoc
 
 
 def prepare(pbp: pd.DataFrame, cfg: PlayConfig, baseline: Baseline | None = None,
@@ -143,16 +212,22 @@ def prepare(pbp: pd.DataFrame, cfg: PlayConfig, baseline: Baseline | None = None
     """Turn play-by-play into rated events. Pass `baseline` and `teams` from history for live games."""
     plays = select_plays(pbp, cfg)
     coach = coach_events(pbp, cfg.include_postseason, cfg.rules)
-    coach["att_unit"], coach["def_unit"], coach["kind"] = COACH, COACH, COACHING
+    coach["att_unit"], coach["def_unit"], coach["kind"], coach["weight"] = COACH, COACH, COACHING, 1.0
+    boom, havoc = vcity_events(plays)
 
-    baseline = baseline or Baseline.fit(plays, coach)
+    baseline = baseline or Baseline.fit(plays, coach, boom)
     plays["base"] = baseline.plays(plays, cfg)
     coach["base"] = baseline.coaching(coach)
+    boom["base"] = baseline.boom(boom)
+    havoc["base"] = baseline.havoc(havoc)
 
-    df = (
-        pd.concat([plays, coach], ignore_index=True)
-        .sort_values(["season", "game_date", "game_id", "play_id", "kind"], kind="stable")
-        .reset_index(drop=True)
+    order = ["season", "game_date", "game_id", "play_id", "kind"]
+    df = pd.concat([plays, coach], ignore_index=True).sort_values(order, kind="stable").reset_index(drop=True)
+    # The engine runs df's rows and the slim V-City events together; df's rows keep their order.
+    allev = (
+        pd.concat([df[ENGINE_COLUMNS].assign(core=True), boom[ENGINE_COLUMNS].assign(core=False),
+                   havoc[ENGINE_COLUMNS].assign(core=False)], ignore_index=True)
+        .sort_values(order, kind="stable").reset_index(drop=True)
     )
 
     teams = teams or sorted(set(df["att_team"]) | set(df["def_team"]))
@@ -167,13 +242,15 @@ def prepare(pbp: pd.DataFrame, cfg: PlayConfig, baseline: Baseline | None = None
         df=df,
         teams=teams,
         games=games,
-        attacker=slot(df["att_team"].map(team_idx).to_numpy(), df["att_unit"].to_numpy()),
-        defender=slot(df["def_team"].map(team_idx).to_numpy(), df["def_unit"].to_numpy()),
-        y=df["y"].to_numpy(float),
-        base=df["base"].to_numpy(float),
-        kind=df["kind"].to_numpy(int),
-        game=game_idx.loc[df["game_id"]].to_numpy(),
-        season=df["season"].to_numpy(),
+        attacker=slot(allev["att_team"].map(team_idx).to_numpy(), allev["att_unit"].to_numpy()),
+        defender=slot(allev["def_team"].map(team_idx).to_numpy(), allev["def_unit"].to_numpy()),
+        y=allev["y"].to_numpy(float),
+        base=allev["base"].to_numpy(float),
+        kind=allev["kind"].to_numpy(int),
+        weight=allev["weight"].to_numpy(float),
+        game=game_idx.loc[allev["game_id"]].to_numpy(),
+        season=allev["season"].to_numpy(),
+        core=allev["core"].to_numpy(bool),
         baseline=baseline,
     )
 
@@ -191,7 +268,7 @@ class EloResult:
     state: EloState         # final ratings
     p: np.ndarray           # expected attacker score before each event
     delta: np.ndarray       # rating change applied to the attacker on each event
-    pre: np.ndarray         # (n_games, 6) pregame ratings in SNAPSHOT order
+    pre: np.ndarray         # (n_games, 2 x units) pregame ratings in SNAPSHOT order
     post: np.ndarray        # same, after the game
     regressed: dict = field(default_factory=dict)  # season -> fraction applied per slot
 
@@ -212,7 +289,8 @@ def run_elo(events: Events, cfg: EloConfig, start: EloState | None = None,
     if start is None:
         start = EloState([cfg.initial] * n_slots)
     r = list(start.ratings)
-    unit_regression = {OFF: cfg.season_regression, DEF: cfg.season_regression, COACH: cfg.coach_regression}
+    unit_regression = {OFF: cfg.season_regression, DEF: cfg.season_regression, COACH: cfg.coach_regression,
+                       **{u: cfg.vcity_regression for u in (BOOM, BOOM_DEF, HAVOC, HAVOC_OFF)}}
     decay = decay or {}
     regressed = {}
 
@@ -224,8 +302,8 @@ def run_elo(events: Events, cfg: EloConfig, start: EloState | None = None,
     # Plain Python lists: much faster than indexing numpy arrays element by element.
     attacker, defender = events.attacker.tolist(), events.defender.tolist()
     y, base, game, season = events.y.tolist(), events.base.tolist(), events.game.tolist(), events.season.tolist()
-    k_by_kind = {PLAY: cfg.k, COACHING: cfg.k_coach}
-    k = [k_by_kind[x] for x in events.kind.tolist()]
+    k_by_kind = {PLAY: cfg.k, COACHING: cfg.k_coach, VBOOM: cfg.k_vcity, VHAVOC: cfg.k_vcity}
+    k = [k_by_kind[x] * w for x, w in zip(events.kind.tolist(), events.weight.tolist(), strict=True)]
 
     p_out, d_out = np.empty(n_events), np.empty(n_events)
     pre, post = np.full((n_games, len(SNAPSHOT)), np.nan), np.full((n_games, len(SNAPSHOT)), np.nan)
@@ -263,8 +341,13 @@ def run_elo(events: Events, cfg: EloConfig, start: EloState | None = None,
 def team_table(events: Events, res: EloResult) -> pd.DataFrame:
     """Final ratings, plus each team's raw play win rates in the latest season for context."""
     r = res.ratings.reshape(-1, len(UNITS))
-    t = pd.DataFrame({"team": events.teams, "off": r[:, OFF], "def": r[:, DEF], "coach": r[:, COACH]})
+    t = pd.DataFrame({"team": events.teams, **{unit: r[:, i] for i, unit in enumerate(UNITS)}})
     t["net"] = (t["off"] - t["off"].mean()) + (t["def"] - t["def"].mean())
+    # V-City: offense = big plays created, defense = havoc created, net = all four units
+    # (big plays and havoc created, minus what's allowed), each above average.
+    rel = {u: t[u] - t[u].mean() for u in ("boom", "boom_def", "havoc", "havoc_off")}
+    t["v_off"], t["v_def"] = rel["boom"], rel["havoc"]
+    t["v_net"] = rel["boom"] + rel["boom_def"] + rel["havoc"] + rel["havoc_off"]
 
     df = events.df
     latest = df[(df["season"] == df["season"].max()) & (df["kind"] == PLAY)]
@@ -278,7 +361,7 @@ def team_table(events: Events, res: EloResult) -> pd.DataFrame:
     ]).sort_values("game_date").groupby("team")["head_coach"].last()
     t["head_coach"] = t["team"].map(last_coach)
 
-    for col in ("net", "off", "def", "coach"):
+    for col in ("net", "off", "def", "coach", "v_off", "v_def", "v_net"):
         t[f"{col}_rank"] = t[col].rank(ascending=False, method="min").astype(int)
     return t.sort_values("net", ascending=False).reset_index(drop=True)
 
@@ -287,7 +370,7 @@ def game_history(events: Events, res: EloResult) -> pd.DataFrame:
     """One row per team per game with ratings going in and coming out."""
     g = events.games
     rows = []
-    for side, opp, first in (("home", "away", 0), ("away", "home", 3)):
+    for side, opp, first in (("home", "away", 0), ("away", "home", len(UNITS))):
         rows.append(pd.DataFrame({
             "season": g["season"], "season_type": g["season_type"], "week": g["week"],
             "game_date": g["game_date"], "game_id": g["game_id"],

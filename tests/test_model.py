@@ -4,7 +4,24 @@ import pytest
 
 from velocity.coaching import coach_events
 from velocity.config import EloConfig, PlayConfig
-from velocity.model import COACH, COACHING, DEF, OFF, EloState, prepare, run_elo, select_plays, slot
+from velocity.model import (
+    BOOM,
+    BOOM_DEF,
+    COACH,
+    COACHING,
+    DEF,
+    HAVOC,
+    HAVOC_OFF,
+    OFF,
+    SNAPSHOT,
+    VBOOM,
+    VHAVOC,
+    EloState,
+    prepare,
+    run_elo,
+    select_plays,
+    slot,
+)
 from velocity.outcomes import play_score
 
 
@@ -29,6 +46,10 @@ def make_pbp(n_games=4, plays_per_game=40, seed=0):
                 "penalty": 0, "penalty_team": None, "timeout": 0, "timeout_team": None,
                 "two_point_attempt": 0, "two_point_conv_result": None,
                 "half_seconds_remaining": 900, "wp": 0.5, "desc": "",
+                "yardline_100": 60, "goal_to_go": 0, "field_goal_result": None, "touchdown": 0, "td_team": None,
+                "sack": 0, "tackled_for_loss": 0, "return_yards": 0, "return_touchdown": 0,
+                "fumble_recovery_1_yards": 0, "safety": 0,
+                "qtr": 1 + 4 * i // plays_per_game, "time": "15:00", "total_home_score": 0, "total_away_score": 0,
             })
     return pd.DataFrame(rows)
 
@@ -52,9 +73,9 @@ def test_first_play_expectation_is_baseline_and_update_matches_k():
 
 def test_season_regression_pulls_toward_mean():
     plays = prepare(make_pbp(), PlayConfig(situational_baseline=False, home_field=False))
-    full = run_elo(plays, EloConfig(k=4, season_regression=1.0))
+    full = run_elo(plays, EloConfig(k=4, season_regression=1.0, vcity_regression=1.0))
     first_2024_game = int(np.argmax(plays.games["season"].to_numpy() == 2024))
-    assert full.pre[first_2024_game] == pytest.approx([1500] * 6)
+    assert full.pre[first_2024_game] == pytest.approx([1500] * len(SNAPSHOT))
 
 
 def test_filters_drop_non_scrimmage_penalties_and_garbage_time():
@@ -123,3 +144,30 @@ def test_live_continues_from_history_state():
     assert isinstance(cont.state, EloState) and cont.state.season == 2024
     # Same events, but the baseline was learned without 2024, so ratings are close, not identical.
     assert cont.ratings == pytest.approx(full.ratings, abs=5)
+
+
+def test_vcity_events_and_weights():
+    pbp = make_pbp(n_games=1)
+    pbp.loc[0, ["yards_gained", "yardline_100"]] = [40, 70]          # a big play
+    pbp.loc[1, ["sack", "yards_gained", "down"]] = [1, -9, 3]        # a 3rd-down sack
+    pbp.loc[2, ["yardline_100", "goal_to_go"]] = [5, 1]              # goal to go
+    pbp.loc[3, ["play_type", "field_goal_result", "yardline_100"]] = ["field_goal", "missed", 30]
+    events = prepare(pbp, PlayConfig())
+    df = events.df.set_index("play_id")
+    assert df.loc[0, "boom"] == pytest.approx(0.75) and df.loc[1, "havoc"] == pytest.approx(0.95)
+    assert df.loc[2, "weight"] == 2.0 and df.loc[3, "weight"] == 1.5 and df.loc[3, "y"] == 0.0
+
+    # Every run/pass makes one boom and one havoc event, attacking and defending the right slots.
+    n_scrimmage = (events.df["play_type"].isin(["run", "pass"])).sum()
+    assert (events.kind == VBOOM).sum() == n_scrimmage == (events.kind == VHAVOC).sum()
+    units = lambda slots: set(s % 7 for s in slots)  # noqa: E731
+    assert units(events.attacker[events.kind == VBOOM]) == {BOOM}
+    assert units(events.defender[events.kind == VBOOM]) == {BOOM_DEF}
+    assert units(events.attacker[events.kind == VHAVOC]) == {HAVOC}
+    assert units(events.defender[events.kind == VHAVOC]) == {HAVOC_OFF}
+
+    # Weights scale K, and the system stays zero-sum.
+    res = run_elo(events, EloConfig(k=1.0))
+    gtg = np.flatnonzero(events.core)[events.df.index[events.df["play_id"] == 2][0]]
+    assert res.delta[gtg] == pytest.approx(2.0 * (events.y[gtg] - res.p[gtg]))
+    assert res.ratings.sum() == pytest.approx(1500 * len(res.ratings))

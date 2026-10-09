@@ -112,19 +112,27 @@ def cmd_tune(args) -> None:
         play_cfg = replace(play_cfg, wp_filter=settings_for(args).garbage_wp)
     events = prepare(data.load_seasons(args.seasons, refresh=args.refresh), play_cfg)
     from_season = eval_start(args.seasons)
-    coach = args.unit == "coach"
-    metric = "coach_log_loss" if coach else "play_log_loss"
+    unit = args.unit
     rows = []
     for k, reg in itertools.product(args.k_grid, args.regression_grid):
-        cfg = EloConfig(k_coach=k, coach_regression=reg) if coach else EloConfig(k=k, season_regression=reg)
+        cfg = {"coach": EloConfig(k_coach=k, coach_regression=reg),
+               "vcity": EloConfig(k_vcity=k, vcity_regression=reg)}.get(unit, EloConfig(k=k, season_regression=reg))
         m = summarize(events, run_elo(events, cfg), from_season)
+        m["vcity_log_loss"] = m["boom_log_loss"] + m["havoc_log_loss"]
         rows.append({"k": k, "regression": reg, **m})
-        skill = m["coach_skill_pct"] if coach else m["play_skill_pct"]
-        print(f"  k={k:<5} regression={reg:<5} skill {skill:+.3f}%  game r {m['game_corr']:.3f}")
+        if unit == "coach":
+            skill = f"{m['coach_skill_pct']:+.3f}%"
+        elif unit == "vcity":
+            skill = f"boom {m['boom_skill_pct']:+.3f}% havoc {m['havoc_skill_pct']:+.3f}%"
+        else:
+            skill = f"{m['play_skill_pct']:+.3f}%"
+        print(f"  k={k:<5} regression={reg:<5} skill {skill}  game r {m['game_corr']:.3f}")
+    metric = {"coach": "coach_log_loss", "vcity": "vcity_log_loss"}.get(unit, "play_log_loss")
     df = pd.DataFrame(rows).sort_values(metric)
-    cols = (["k", "regression", "coach_skill_pct", "coach_game_corr"] if coach else
-            ["k", "regression", "play_skill_pct", "game_corr", "game_pick_pct", "pts_per_100_elo"])
-    print(f"\nbest first (by next-{'event' if coach else 'play'} log loss, evaluated from {from_season}):")
+    cols = {"coach": ["k", "regression", "coach_skill_pct", "coach_game_corr"],
+            "vcity": ["k", "regression", "boom_skill_pct", "havoc_skill_pct", "vcity_game_corr"]}.get(
+        unit, ["k", "regression", "play_skill_pct", "game_corr", "game_pick_pct", "pts_per_100_elo"])
+    print(f"\nbest first (by next-event log loss, evaluated from {from_season}):")
     print(df[cols].head(10).to_string(index=False, float_format=lambda x: f"{x:.3f}"))
 
 
@@ -201,7 +209,8 @@ def main() -> None:
     p.set_defaults(func=cmd_run)
 
     p = sub.add_parser("tune", parents=[common, plays], help="grid-search k and season regression")
-    p.add_argument("--unit", choices=["od", "coach"], default="od", help="tune offense/defense or coaching")
+    p.add_argument("--unit", choices=["od", "coach", "vcity"], default="od",
+                   help="tune offense/defense, coaching, or V-City (boom + havoc)")
     p.add_argument("--k-grid", type=float, nargs="+", default=[0.4, 0.5, 0.75, 1, 1.5])
     p.add_argument("--regression-grid", type=float, nargs="+", default=[0.2, 0.3, 0.4, 0.5, 0.6])
     p.add_argument("--exclude-garbage", action="store_true", help="tune on plays outside garbage time")

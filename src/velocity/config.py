@@ -42,4 +42,9 @@ class EloConfig:
     k_coach: float = 1.0
     coach_regression: float = 0.25
 
+    # V-City ratings (boom and havoc). Most plays score ~0 here, so each event carries less
+    # information and needs a bigger K; tuned on 2000-2026 (`velocity tune --unit vcity`).
+    k_vcity: float = 3.0
+    vcity_regression: float = 0.5
+
     initial: float = 1500.0

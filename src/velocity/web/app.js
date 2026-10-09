@@ -269,6 +269,82 @@ function sparkline(values) {
     s("circle", { cx: x(last), cy: y(values[last]), r: 3, fill: "var(--accent)", stroke: "var(--surface)", "stroke-width": 1.5 }));
 }
 
+const VCITY = "Volatile Chunks & Intercepted Throws, Y'know";
+
+/**
+ * Team scatter: one logo per team on two axes, quadrants split at league average (0, 0).
+ * opts: teams [{team, x, y}], xLabel, yLabel, quadrants {tr, tl, br, bl}, tip(team) -> Node[],
+ *       trail(team) -> [{x, y, label}], ring(team) -> "gold" | "silver" | null
+ */
+function scatterChart(opts) {
+  const wrap = h("div", { class: "chart scatter" });
+  let selected = null;
+
+  function render() {
+    const W = Math.max(300, wrap.clientWidth || 640), H = Math.round(Math.min(560, Math.max(340, W * 0.62)));
+    const m = { l: 52, r: 18, t: 14, b: 44 };
+    const trail = selected ? opts.trail(selected) : [];
+    const ax = Math.max(1, ...opts.teams.map((t) => Math.abs(t.x)), ...trail.map((p) => Math.abs(p.x))) * 1.12;
+    const ay = Math.max(1, ...opts.teams.map((t) => Math.abs(t.y)), ...trail.map((p) => Math.abs(p.y))) * 1.12;
+    const x = (v) => m.l + ((v + ax) / (2 * ax)) * (W - m.l - m.r);
+    const y = (v) => m.t + ((ay - v) / (2 * ay)) * (H - m.t - m.b);
+    const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, height: H, role: "img", "aria-label": `${opts.xLabel} against ${opts.yLabel}` });
+
+    for (const t of niceTicks(-ax, ax, 6)) {
+      svg.append(s("line", { class: t === 0 ? "baseline zero" : "gridline", x1: x(t), x2: x(t), y1: m.t, y2: H - m.b }),
+        s("text", { class: "axis-label", x: x(t), y: H - m.b + 16, "text-anchor": "middle" }, signed(t, 0)));
+    }
+    for (const t of niceTicks(-ay, ay, 5)) {
+      svg.append(s("line", { class: t === 0 ? "baseline zero" : "gridline", x1: m.l, x2: W - m.r, y1: y(t), y2: y(t) }),
+        s("text", { class: "axis-label", x: m.l - 8, y: y(t) + 4, "text-anchor": "end" }, signed(t, 0)));
+    }
+    const q = opts.quadrants;
+    // Quadrant labels share the top and bottom edges; shrink them when the chart is narrow.
+    const half = (W - m.l - m.r) / 2 - 14;
+    const fit = (a, b) => Math.max(8, Math.min(11, half / (Math.max(a.length, b.length) * 0.78)));
+    const fTop = fit(q.tl, q.tr), fBot = fit(q.bl, q.br);
+    svg.append(
+      s("text", { class: "quad-label", x: W - m.r - 8, y: m.t + 16, "text-anchor": "end", "font-size": fTop }, q.tr),
+      s("text", { class: "quad-label", x: m.l + 8, y: m.t + 16, "font-size": fTop }, q.tl),
+      s("text", { class: "quad-label", x: W - m.r - 8, y: H - m.b - 10, "text-anchor": "end", "font-size": fBot }, q.br),
+      s("text", { class: "quad-label", x: m.l + 8, y: H - m.b - 10, "font-size": fBot }, q.bl),
+      s("text", { class: "axis-title", x: (m.l + W - m.r) / 2, y: H - 6, "text-anchor": "middle" }, opts.xLabel),
+      s("text", { class: "axis-title", transform: `translate(14 ${(m.t + H - m.b) / 2}) rotate(-90)`, "text-anchor": "middle" }, opts.yLabel));
+
+    if (trail.length > 1) {
+      svg.append(s("polyline", { class: "trail", points: trail.map((p) => `${x(p.x).toFixed(1)},${y(p.y).toFixed(1)}`).join(" ") }));
+      trail.forEach((p, i) => svg.append(s("circle", { class: "trail-dot", cx: x(p.x), cy: y(p.y), r: i === 0 ? 4 : 2.5 }, s("title", {}, p.label))));
+      svg.append(s("text", { class: "trail-label", x: x(trail[0].x) + 6, y: y(trail[0].y) - 6 }, trail[0].label));
+    }
+
+    // Draw the selected team last so it sits on top.
+    const order = [...opts.teams].sort((a, b) => (a.team === selected) - (b.team === selected));
+    for (const t of order) {
+      const cx = x(t.x), cy = y(t.y), ring = opts.ring ? opts.ring(t.team) : null;
+      const g = s("g", { class: `team-dot ${selected && selected !== t.team ? "dim" : ""} ${ring || ""}`, tabindex: 0, role: "button", "aria-label": `${t.team}: ${signed(t.x)} Elo, ${signed(t.y)} V-City` },
+        s("circle", { class: "dot-bg", cx, cy, r: 15 }));
+      const lg = meta(t.team).logo;
+      g.append(lg ? s("image", { href: lg, x: cx - 11, y: cy - 11, width: 22, height: 22 })
+        : s("text", { class: "dot-abbr", x: cx, y: cy + 3.5, "text-anchor": "middle" }, t.team));
+      const show = (evt) => tip.show(evt.clientX != null ? evt : { clientX: g.getBoundingClientRect().right, clientY: g.getBoundingClientRect().top }, () => opts.tip(t.team));
+      g.addEventListener("pointermove", show);
+      g.addEventListener("pointerleave", () => tip.hide());
+      g.addEventListener("focus", show);
+      g.addEventListener("blur", () => tip.hide());
+      const pick = () => { selected = selected === t.team ? null : t.team; tip.hide(); render(); opts.onSelect && opts.onSelect(selected); };
+      g.addEventListener("click", pick);
+      g.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); } });
+      svg.append(g);
+    }
+    wrap.replaceChildren(svg);
+  }
+
+  const ro = new ResizeObserver(() => render());
+  requestAnimationFrame(() => { render(); ro.observe(wrap); });
+  wrap.select = (team) => { selected = team; render(); };
+  return wrap;
+}
+
 function probBar(leftLabel, leftP, rightLabel, leftColor = "var(--series-2)", rightColor = "var(--series-1)") {
   const lp = Math.max(0.02, Math.min(0.98, leftP));
   return h("div", { class: "prob" },
@@ -352,7 +428,8 @@ function setNav(name) {
 
 const COLS = [
   { key: "net", label: "Net" }, { key: "spread", label: "Spread" }, { key: "off", label: "Offense" },
-  { key: "def", label: "Defense" }, { key: "off_win_pct", label: "Off win %" }, { key: "def_win_pct", label: "Def win %" },
+  { key: "def", label: "Defense" }, { key: "v_off", label: "Big plays" }, { key: "v_def", label: "Havoc" },
+  { key: "off_win_pct", label: "Off win %" }, { key: "def_win_pct", label: "Def win %" },
   { key: "coach", label: "Coach ⚠" },
 ];
 
@@ -360,7 +437,8 @@ function viewRatings(app, params) {
   setNav("ratings");
   const sm = store.summary;
   const ng = store.variant === "ng";
-  const k = (key) => (ng && ["net", "off", "def", "spread", "net_rank", "off_rank", "def_rank"].includes(key) ? `${key}_ng` : key);
+  const k = (key) => (ng && ["net", "off", "def", "spread", "net_rank", "off_rank", "def_rank", "v_off", "v_off_rank",
+    "v_def", "v_def_rank", "v_net", "v_net_rank"].includes(key) ? `${key}_ng` : key);
   const source = store.scope === "season" ? sm.ratings_season : sm.ratings;
   const anyLive = source.some((r) => Math.abs(r.live_change || 0) >= 0.05);
   let sortKey = params.get("sort") || "net", sortDir = -1;  // -1 = high to low
@@ -406,6 +484,8 @@ function viewRatings(app, params) {
         h("td", { class: "num" }, signed(r[k("spread")])),
         h("td", { class: "num" }, fmt1(r[k("off")]), h("span", { class: "rk" }, ordinal(r[k("off_rank")]))),
         h("td", { class: "num" }, fmt1(r[k("def")]), h("span", { class: "rk" }, ordinal(r[k("def_rank")]))),
+        h("td", { class: "num" }, signed(r[k("v_off")]), h("span", { class: "rk" }, ordinal(r[k("v_off_rank")]))),
+        h("td", { class: "num" }, signed(r[k("v_def")]), h("span", { class: "rk" }, ordinal(r[k("v_def_rank")]))),
         h("td", { class: "num" }, fmt1(r.off_win_pct)),
         h("td", { class: "num" }, fmt1(r.def_win_pct)),
         h("td", { class: "num muted" }, fmt1(r.coach), h("span", { class: "rk" }, ordinal(r.coach_rank))),
@@ -431,7 +511,7 @@ function viewRatings(app, params) {
     h("div", { class: "card" },
       h("div", { class: "table-wrap" }, table),
       h("p", { class: "card-sub", style: { margin: "12px 0 0" } },
-        "Net = offense + defense Elo above average. Spread = points better than an average team on a neutral field. Off/Def win % = share of plays won this season (ties count half). Click a column to sort; click again to flip."),
+        "Net = offense + defense Elo above average. Spread = points better than an average team on a neutral field. Big plays and Havoc are V-City: offense big plays and defensive havoc above average. Off/Def win % = share of plays won this season (ties count half). Click a column to sort; click again to flip."),
       h("div", { class: "disclaimer" }, h("strong", {}, "⚠ Coach"), h("span", {}, sm.coach_disclaimer))),
   );
 }
@@ -561,8 +641,8 @@ async function viewTeam(app, abbr, params) {
         h("div", { class: "head-tools" }, toggles(() => render({ keepScroll: true })))),
       h("div", { class: "tiles" },
         tile("Net", signed(cur.net), `${ordinal(cur.net_rank)} · ${signed(cur.spread)} pts vs average`, "hero"),
-        tile("Offense", fmt1(cur.off), `${ordinal(cur.off_rank)} · wins ${fmt1(cur.off_win_pct)}% of plays`),
-        tile("Defense", fmt1(cur.def), `${ordinal(cur.def_rank)} · wins ${fmt1(cur.def_win_pct)}% of plays`),
+        tile("Offense", fmt1(cur.off), `${ordinal(cur.off_rank)} · wins ${fmt1(cur.off_win_pct)}% of plays · V-City big plays ${signed(cur.v_off)} (${ordinal(cur.v_off_rank)})`),
+        tile("Defense", fmt1(cur.def), `${ordinal(cur.def_rank)} · wins ${fmt1(cur.def_win_pct)}% of plays · V-City havoc ${signed(cur.v_def)} (${ordinal(cur.v_def_rank)})`),
         tile("Coach ⚠", fmt1(cur.coach), `${ordinal(cur.coach_rank)} · it will suck`))),
     h("div", { class: "card" }, chartBox),
     h("div", { class: "grid-2" },
@@ -666,7 +746,13 @@ async function viewGame(app, gameId) {
       const isCoach = e.kind === 1;
       const res = e.y === 1 ? "W" : e.y === 0.5 ? "T" : "L";
       const dd = isCoach ? (e.event === "two_point" ? "2-pt try" : e.event === "timeout" ? "Timeout" : "Penalty")
-        : e.play_type === "punt" ? `${DOWN[e.down] || ""} · punt` : `${DOWN[e.down] || ""} & ${fmt0(e.ydstogo)}`;
+        : e.play_type === "punt" ? `${DOWN[e.down] || ""} · punt` : e.play_type === "field_goal" ? `${DOWN[e.down] || ""} · FG`
+        : `${DOWN[e.down] || ""} & ${fmt0(e.ydstogo)}`;
+      const marks = isCoach ? [] : [
+        e.weight > 1 ? h("span", { class: "wt-chip", title: `Counts ${e.weight}× (${e.play_type === "field_goal" ? "field goal" : "red zone"})` }, `×${e.weight}`) : null,
+        e.boom >= 0.25 ? h("span", { class: "v-mark", title: `Big play: ${e.boom.toFixed(2)} V-City credit` }, "💥") : null,
+        e.havoc >= 0.25 ? h("span", { class: "v-mark", title: `Havoc: ${e.havoc.toFixed(2)} V-City credit` }, "⚡") : null,
+      ].filter(Boolean);
       rows.push(h("tr", { class: isCoach ? "coach-row" : "" },
         h("td", { class: "clock" }, e.time || ""),
         h("td", { class: "dd" }, dd),
@@ -676,7 +762,7 @@ async function viewGame(app, gameId) {
           h("div", { class: "split-bar", role: "img", "aria-label": `${e.att_team} ${pct(e.p)} to win the ${isCoach ? "event" : "play"}` },
             h("span", { style: { flex: Math.max(0.03, e.p), background: color(e.att_team) } }), h("span", { style: { flex: Math.max(0.03, 1 - e.p), background: color(e.def_team) } })),
           h("div", { class: "split-labels" }, h("span", {}, `${e.att_team} ${pct(e.p)}`), h("span", {}, `${pct(1 - e.p)} ${e.def_team}`)))),
-        h("td", { class: "res" }, h("span", { class: `res-badge res-${res}`, title: `${e.att_team} ${res === "W" ? "won" : res === "T" ? "tied" : "lost"}` }, res)),
+        h("td", { class: "res" }, h("span", { class: `res-badge res-${res}`, title: `${e.att_team} ${res === "W" ? "won" : res === "T" ? "tied" : "lost"}` }, res), ...marks),
         h("td", { class: `elo ${e.delta > 0 ? "delta-up" : e.delta < 0 ? "delta-down" : "muted"}` }, signed(e.delta, 2))));
     }
     tbody.replaceChildren(...rows);
@@ -730,7 +816,7 @@ async function viewGame(app, gameId) {
         h("p", { class: "card-sub", style: { margin: "10px 0 0" } }, "Ratings after this game, with the change in parentheses."))),
     h("div", { class: "card" },
       h("div", { class: "chart-head" },
-        h("div", {}, h("h2", {}, "Play by play"), h("p", { class: "card-sub", style: { margin: 0 } }, "Bar = each side's chance to win the play before the snap. W/T/L and Elo are from the offense's side.")),
+        h("div", {}, h("h2", {}, "Play by play"), h("p", { class: "card-sub", style: { margin: 0 } }, "Bar = each side's chance to win the play before the snap. W/T/L and Elo are from the offense's side. ×1.5 / ×2 = weighted play (red zone, goal to go, field goal); 💥 big play and ⚡ havoc feed V-City.")),
         h("div", { class: "range" }, seg([["plays", "Plays"], ["all", "Plays + coaching"]], "plays", (v) => { showCoach = v === "all"; drawPlays(); }))),
       h("div", { class: "table-wrap" }, h("table", { class: "plays" }, tbody))),
   );
@@ -772,6 +858,67 @@ async function viewSeason(app, year) {
   document.title = `${data.season} season · VeloCITY`;
 }
 
+const QUADRANT_VIEWS = [
+  { key: "off", title: "Offense", x: "off", y: "v_off", xLabel: "Elo: offense (consistency) →", yLabel: "V-City: big plays ↑",
+    sub: "Right = wins more plays than the situation predicts. Up = makes more big plays. Boom-or-bust offenses live top-left.",
+    quadrants: { tr: "Explosive & efficient", br: "Grinders", tl: "Boom or bust", bl: "Struggling" } },
+  { key: "def", title: "Defense", x: "def", y: "v_def", xLabel: "Elo: defense (consistent stops) →", yLabel: "V-City: havoc ↑",
+    sub: "Right = stops more plays than expected. Up = more sacks, takeaways and tackles for loss. Feast-or-famine defenses live top-left.",
+    quadrants: { tr: "Dominant", br: "Disciplined", tl: "Feast or famine", bl: "Struggling" } },
+  { key: "net", title: "Net", x: "net", y: "v_net", xLabel: "Elo: net (offense + defense) →", yLabel: "V-City: net (made − allowed) ↑",
+    sub: "Both sides of the ball. Up = makes more big plays and havoc than it allows.",
+    quadrants: { tr: "Contenders", br: "Grinders", tl: "Boom or bust", bl: "Rebuilding" } },
+];
+
+async function viewChart(app, params) {
+  setNav("chart");
+  const sm = store.summary;
+  const season = +(params.get("season") || sm.status.through.season);
+  const data = await api(`/api/season/${season}?variant=${setKey()}`);
+  const byTeam = Object.fromEntries(data.teams.map((t) => [t.team, t]));
+  const rankOf = (key) => {
+    const sorted = [...data.teams].sort((a, b) => b[key] - a[key]);
+    return Object.fromEntries(sorted.map((t, i) => [t.team, i + 1]));
+  };
+  const ring = (team) => (data.champion && data.champion.team === team ? "gold" : data.champion && data.champion.runner_up === team ? "silver" : null);
+  const sel = h("select", { class: "select", "aria-label": "Season", onchange: (e) => go(`/chart?season=${e.target.value}`) },
+    [...data.seasons].reverse().map((y) => h("option", { value: y, selected: y === data.season ? true : null }, y)));
+
+  const cards = QUADRANT_VIEWS.map((v) => {
+    const rx = rankOf(v.x), ry = rankOf(v.y);
+    const quad = (t) => (t[v.x] >= 0 ? (t[v.y] >= 0 ? v.quadrants.tr : v.quadrants.br) : (t[v.y] >= 0 ? v.quadrants.tl : v.quadrants.bl));
+    const chart = scatterChart({
+      teams: data.teams.map((t) => ({ team: t.team, x: t[v.x], y: t[v.y] })),
+      xLabel: v.xLabel, yLabel: v.yLabel, quadrants: v.quadrants, ring,
+      trail: (team) => byTeam[team].points.map((p) => ({ x: p[v.x], y: p[v.y], label: weekName(data.season, p.week) })),
+      tip: (team) => {
+        const t = byTeam[team];
+        return [h("div", { class: "tt-title" }, `${meta(team).name || team} · ${t.w}-${t.l}${t.t ? `-${t.t}` : ""} · ${quad(t)}`),
+          ttRow("var(--series-1)", signed(t[v.x]), `Elo (${ordinal(rx[team])})`),
+          ttRow("var(--series-3)", signed(t[v.y]), `V-City (${ordinal(ry[team])})`),
+          h("div", { class: "tt-desc" }, "Click to trace the season")];
+      },
+    });
+    const table = h("details", { class: "chart-table" }, h("summary", {}, "Show as a table"),
+      h("div", { class: "table-wrap" }, h("table", {},
+        h("thead", {}, h("tr", {}, h("th", { class: "left" }, "Team"), h("th", {}, "Elo"), h("th", {}, "V-City"), h("th", { class: "left" }, "Quadrant"))),
+        h("tbody", {}, [...data.teams].sort((a, b) => b[v.x] - a[v.x]).map((t) => h("tr", {},
+          h("td", { class: "left" }, teamLink(t.team)),
+          h("td", { class: "num" }, signed(t[v.x]), h("span", { class: "rk" }, ordinal(rx[t.team]))),
+          h("td", { class: "num" }, signed(t[v.y]), h("span", { class: "rk" }, ordinal(ry[t.team]))),
+          h("td", { class: "left ink-2" }, quad(t))))))));
+    return h("section", { class: "card" }, h("h2", {}, v.title), h("p", { class: "card-sub" }, v.sub), chart, table);
+  });
+
+  app.replaceChildren(
+    h("div", { class: "page-head" },
+      h("div", {}, h("h1", {}, "Elo × V-City"),
+        h("div", { class: "sub" }, `Elo rewards consistency: winning down after down, sustained drives, stingy defense. V-City (${VCITY}) rewards the plays Elo can't see: big chunks on offense, sacks and takeaways on defense. Ratings after ${data.season === sm.status.through.season ? "the latest game" : `the ${data.season} season`}; 0 is league average. Gold and silver rings mark that season's Super Bowl teams.`)),
+      h("div", { class: "head-tools" }, sel, toggles(() => render({ keepScroll: true })))),
+    ...cards);
+  document.title = `Elo × V-City ${data.season} · VeloCITY`;
+}
+
 function describeThreshold(t) {
   if (t.kind === "off") return null;
   if (t.kind === "share") return t.value === 1 ? "converts a first down" : `gains at least ${+(t.value * 100).toFixed(1)}% of the yards to go`;
@@ -797,8 +944,10 @@ function viewRules(app) {
             h("td", { class: "left" }, describeThreshold(r.downs[d].tie) || "no ties")))))),
         h("ul", { class: "rule-list", style: { marginTop: "12px" } },
           h("li", {}, `A punt is ${punt}.`),
+          r.field_goals ? h("li", {}, "A made field goal is a win for the offense; a miss or a block is a win for the defense.") : null,
           h("li", {}, r.turnover_loss ? "A turnover is always a loss." : "Turnovers are scored by the yards gained before them."),
-          h("li", {}, "Plays with an accepted penalty, two-point tries, kneels, spikes, field goals and kickoffs don't count for offense or defense."))),
+          h("li", {}, `Plays that matter more move ratings more: red-zone snaps count ${r.weights.red_zone}×, goal to go ${r.weights.goal_to_go}×, field-goal attempts ${r.weights.field_goal}×. The weight comes from the situation before the snap, so it never favors one side's result.`),
+          h("li", {}, `Plays with an accepted penalty, two-point tries, kneels, spikes and kickoffs don't count for offense or defense${r.field_goals ? "" : ", and neither do field goals"}.`))),
       h("div", {},
         h("div", { class: "card" }, h("h2", {}, "Coaching staff ⚠"),
           h("ul", { class: "rule-list" },
@@ -807,6 +956,13 @@ function viewRules(app) {
             r.two_point ? h("li", {}, "A two-point try is a win for the offense's staff on success, the defense's on a stop.") : null,
             !(r.penalties || r.timeouts || r.two_point) ? h("li", {}, "No coaching events are counted.") : null),
           h("div", { class: "disclaimer" }, h("span", {}, sm.coach_disclaimer))),
+        h("div", { class: "card" }, h("h2", {}, "V-City"),
+          h("p", { class: "card-sub" }, `${VCITY}. The second axis: the plays Elo can't see. Rated the same way as Elo, opponent-adjusted and against what the situation predicts.`),
+          h("ul", { class: "rule-list" },
+            h("li", {}, `Big plays (offense): credit starts at ${r.boom.start} yards and is full at ${r.boom.full}+, plus ${r.boom.td_bonus} for a touchdown from outside the red zone. Defenses are rated on preventing them.`),
+            h("li", {}, `Havoc (defense): a sack is worth ${r.havoc.sack_base} + ${r.havoc.sack_per_yard} per yard lost; a tackle for loss ${r.havoc.tfl_base} + ${r.havoc.tfl_per_yard} per yard; both ×${r.havoc.late_down} on 3rd and 4th down.`),
+            h("li", {}, `Takeaways: an interception is worth ${r.havoc.interception}, a lost fumble ${r.havoc.fumble}, +${r.havoc.backfield} if forced in the backfield and +${r.havoc.return_per_yard} per return yard. Return touchdowns count ${r.havoc.return_td}, safeties ${r.havoc.safety}. Offenses are rated on avoiding havoc.`),
+            h("li", {}, `V-City ratings move up to ${m.k_vcity} per play and are pulled ${Math.round(m.vcity_regression * 100)}% back to average between seasons.`))),
         h("div", { class: "card" }, h("h2", {}, "How ratings move"),
           h("ul", { class: "rule-list" },
             h("li", {}, `Each play moves the offense and defense ratings by up to ${m.k} Elo (K); coaching events by up to ${m.k_coach}.`),
@@ -852,6 +1008,7 @@ async function render(opts = {}) {
     else if (parts[0] === "games") await viewGames(app, url.searchParams);
     else if (parts[0] === "season") await viewSeason(app, parts[1] ? +parts[1] : null);
     else if (parts[0] === "rules") viewRules(app);
+    else if (parts[0] === "chart") await viewChart(app, url.searchParams);
     else { viewRatings(app, url.searchParams); document.title = "VeloCITY"; }
     if (opts.keepScroll) scrollTo(0, scroll); else if (!opts.soft) scrollTo(0, 0);
   } catch (e) {

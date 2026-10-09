@@ -22,6 +22,8 @@ class Settings:
     k_coach: float = DEFAULT_MODEL.k_coach
     season_regression: float = DEFAULT_MODEL.season_regression
     coach_regression: float = DEFAULT_MODEL.coach_regression
+    k_vcity: float = DEFAULT_MODEL.k_vcity
+    vcity_regression: float = DEFAULT_MODEL.vcity_regression
     decay: bool = True
     garbage_wp: tuple[float, float] = GARBAGE_TIME_WP
 
@@ -30,7 +32,8 @@ class Settings:
 
     def elo_config(self) -> EloConfig:
         return EloConfig(k=self.k, season_regression=self.season_regression,
-                         k_coach=self.k_coach, coach_regression=self.coach_regression)
+                         k_coach=self.k_coach, coach_regression=self.coach_regression,
+                         k_vcity=self.k_vcity, vcity_regression=self.vcity_regression)
 
     def decay_params(self):
         if not self.decay:
@@ -42,7 +45,8 @@ class Settings:
         return {
             "rules": self.rules.to_dict(),
             "model": {"k": self.k, "k_coach": self.k_coach, "season_regression": self.season_regression,
-                      "coach_regression": self.coach_regression, "decay": self.decay,
+                      "coach_regression": self.coach_regression, "k_vcity": self.k_vcity,
+                      "vcity_regression": self.vcity_regression, "decay": self.decay,
                       "garbage_wp": list(self.garbage_wp)},
         }
 
@@ -58,7 +62,7 @@ class Settings:
         m = d.get("model") or {}
         nums = {}
         for name, lo, hi in (("k", 0.01, 20), ("k_coach", 0.0, 20), ("season_regression", 0, 1),
-                             ("coach_regression", 0, 1)):
+                             ("coach_regression", 0, 1), ("k_vcity", 0.0, 20), ("vcity_regression", 0, 1)):
             try:
                 nums[name] = float(m.get(name, getattr(DEFAULT_MODEL, name)))
                 if not lo <= nums[name] <= hi:
@@ -97,15 +101,22 @@ def preview(sample: pd.DataFrame, rules: Rules) -> dict:
 
     plays = select_plays(sample, cfg)
     label = plays["down"].fillna(0).astype(int).astype(str).where(plays["play_type"] != "punt", "punt")
+    label = label.where(plays["play_type"] != "field_goal", "fg")
     rows = []
-    for key, name in (("1", "1st down"), ("2", "2nd down"), ("3", "3rd down"), ("4", "4th down (go)"), ("punt", "Punts")):
+    for key, name in (("1", "1st down"), ("2", "2nd down"), ("3", "3rd down"), ("4", "4th down (go)"),
+                      ("punt", "Punts"), ("fg", "Field goals")):
         y = plays.loc[label == key, "y"]
         if not len(y):
             continue
         rows.append({"key": key, "label": name, "plays": int(len(y)), "win": float((y == 1).mean()),
                      "tie": float((y == 0.5).mean()), "loss": float((y == 0).mean())})
     coach = coach_events(sample, True, rules)["event"].value_counts().to_dict()
-    return {"season": int(sample["season"].max()), "downs": rows,
+    games = sample["game_id"].nunique() * 2  # team-games
+    sc = plays[plays["play_type"].isin(["run", "pass"])]
+    vcity = {"boom_per_game": float(sc["boom"].sum() / games), "havoc_per_game": float(sc["havoc"].sum() / games),
+             "full_booms_per_game": float((sc["boom"] >= 1).sum() / games),
+             "weighted_share": float((plays["weight"] > 1).mean())}
+    return {"season": int(sample["season"].max()), "downs": rows, "vcity": vcity,
             "overall": float(plays["y"].mean()) if len(plays) else None,
             "coaching": {k: int(v) for k, v in coach.items()}}
 

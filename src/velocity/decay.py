@@ -23,7 +23,7 @@ import pandas as pd
 from . import data
 from .config import EloConfig
 from .evaluate import log_loss
-from .model import COACH, COACHING, DEF, OFF, PLAY, UNITS, Events, run_elo, slot
+from .model import COACH, COACHING, DEF, OFF, PLAY, SNAP, Events, run_elo, slot
 
 FIRST_SNAP_SEASON = 2013
 ON_ROSTER = ("ACT", "INA")  # active, or a game-day inactive: on the 53, available to play
@@ -161,13 +161,13 @@ def retention(events: Events, feats: pd.DataFrame, elo_cfg: EloConfig) -> pd.Dat
     Each season is rated from scratch (full regression) so a season's strength is its own;
     retention is the slope of this season's average rating on last season's.
     """
-    fresh = run_elo(events, replace(elo_cfg, season_regression=1.0, coach_regression=1.0))
+    fresh = run_elo(events, replace(elo_cfg, season_regression=1.0, coach_regression=1.0, vcity_regression=1.0))
     g = events.games[["season", "home_idx", "away_idx"]].copy()
     rows = []
-    for side, cols in (("home", (0, 1, 2)), ("away", (3, 4, 5))):
+    for side in ("home", "away"):
         part = pd.DataFrame({"season": g["season"], "team": [events.teams[i] for i in g[f"{side}_idx"]]})
-        for unit, col in zip(UNITS, cols, strict=True):
-            part[unit] = fresh.post[:, col] - 1500
+        for unit in ("off", "def", "coach"):
+            part[unit] = fresh.post[:, SNAP[(side, unit)]] - 1500
         rows.append(part)
     strength = pd.concat(rows).groupby(["season", "team"]).mean().reset_index()
     prev = strength.assign(season=strength["season"] + 1)

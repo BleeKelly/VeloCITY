@@ -30,10 +30,14 @@ PASS_TYPES = {"3", "24", "67", "7", "26", "36"}  # incompletion, reception, pass
 FUMBLE_TYPES = {"9", "29", "39", "80"}        # pass or run; decided from the text
 PUNT_TYPES = {"52", "17"}                     # Punt, Blocked Punt
 INTERCEPTION_TYPES = {"26", "36"}
+RETURN_TD_TYPES = {"36", "39"}               # interception / fumble return touchdowns
+SACK_TYPES = {"7", "80"}
+SAFETY_TYPE = "20"
 TIMEOUT_TYPE = "21"
 
 PENALTY_RE = re.compile(r"PENALTY on ([A-Z]{2,3})\b(.*?)(?=PENALTY on|$)", re.IGNORECASE | re.DOTALL)
 TIMEOUT_RE = re.compile(r"Timeout #\d by ([A-Z]{2,3})\b")
+GAIN_RE = re.compile(r"for (-?\d+) yards?|for no gain", re.IGNORECASE)
 
 
 def fetch_json(url: str) -> dict:
@@ -131,6 +135,8 @@ def summary_rows(summary: dict, coaches: dict[str, str] | None = None) -> pd.Dat
             play_type = "qb_spike"
         elif type_id in PUNT_TYPES or " punts " in lower:  # includes muffed punts
             play_type = "punt"
+        elif "field goal" in lower:
+            play_type = "field_goal"
         elif type_id in RUN_TYPES:
             play_type = "run"
         elif type_id in PASS_TYPES:
@@ -141,6 +147,15 @@ def summary_rows(summary: dict, coaches: dict[str, str] | None = None) -> pd.Dat
             play_type = None
 
         interception = type_id in INTERCEPTION_TYPES or "intercepted" in lower
+        fumble_lost = bool(p.get("isTurnover")) and not interception and play_type in ("run", "pass")
+        upper = text.upper()
+        touchdown = "TOUCHDOWN" in upper and "TOUCHDOWN NULLIFIED" not in upper
+        fg_result = None
+        if play_type == "field_goal":
+            fg_result = "blocked" if "blocked" in lower else "made" if "is good" in lower else "missed"
+        stat_yards = float(p.get("statYardage") or 0)
+        if fumble_lost and stat_yards == 0 and (m := GAIN_RE.search(text.split("FUMBLES")[0])):
+            stat_yards = float(m.group(1) or 0)  # ESPN zeroes a gain that ended in a lost fumble
         play_id = int(str(p["id"])[len(str(header["id"])):] or 0)
         period, clock = p.get("period", {}).get("number", 0), p.get("clock", {}).get("displayValue", "0:00")
         down = start.get("down") or np.nan
@@ -158,11 +173,24 @@ def summary_rows(summary: dict, coaches: dict[str, str] | None = None) -> pd.Dat
             "play_id": float(play_id),
             "home_coach": coaches.get(info["home_team"]), "away_coach": coaches.get(info["away_team"]),
             "posteam": posteam, "defteam": defteam, "play_type": play_type,
-            "down": float(down) if play_type in ("run", "pass", "punt", "qb_kneel", "qb_spike", "no_play") else np.nan,
+            "down": float(down) if play_type in ("run", "pass", "punt", "field_goal", "qb_kneel", "qb_spike",
+                                                 "no_play") else np.nan,
             "ydstogo": float(start.get("distance") or 0),
-            "yards_gained": float(p.get("statYardage") or 0),
+            # ESPN puts an interception's return in statYardage; nflverse has 0 gained and return_yards.
+            "yards_gained": 0.0 if interception else stat_yards,
             "interception": float(interception),
-            "fumble_lost": float(bool(p.get("isTurnover")) and not interception),
+            "fumble_lost": float(fumble_lost),
+            "yardline_100": float(start.get("yardsToEndzone") or np.nan),
+            "goal_to_go": float("goal" in (start.get("shortDownDistanceText") or "").lower()),
+            "field_goal_result": fg_result,
+            "touchdown": float(touchdown),
+            "td_team": (defteam if (interception or fumble_lost) else posteam) if touchdown else None,
+            "sack": float(type_id in SACK_TYPES or "sacked" in lower),
+            "tackled_for_loss": float(play_type == "run" and stat_yards < 0 and "fumbles" not in lower),
+            "return_yards": stat_yards if interception else 0.0,
+            "return_touchdown": float(type_id in RETURN_TD_TYPES or (touchdown and (interception or fumble_lost))),
+            "fumble_recovery_1_yards": 0.0,
+            "safety": float(type_id == SAFETY_TYPE or "SAFETY" in upper),
             "penalty": float(penalty_team is not None),
             "penalty_team": penalty_team,
             "timeout": float(timeout_team is not None),
@@ -176,13 +204,13 @@ def summary_rows(summary: dict, coaches: dict[str, str] | None = None) -> pd.Dat
         rows.append(row)
 
         # nflverse keeps a two-point try as its own row with no down; ESPN folds it into the TD.
-        if "TWO-POINT CONVERSION ATTEMPT" in text.upper() and "DEFENSIVE TWO-POINT" not in text.upper():
-            upper = text.upper()
+        if "TWO-POINT CONVERSION ATTEMPT" in upper and "DEFENSIVE TWO-POINT" not in upper:
             result = "success" if "ATTEMPT SUCCEEDS" in upper else "failure" if "ATTEMPT FAILS" in upper else None
             rows.append(row | {
                 "play_id": play_id + 0.5, "play_type": "pass" if " pass " in lower.split("two-point")[-1] else "run",
                 "down": np.nan, "two_point_attempt": 1.0, "two_point_conv_result": result,
                 "penalty": 0.0, "penalty_team": None, "interception": 0.0, "fumble_lost": 0.0,
+                "touchdown": 0.0, "td_team": None, "sack": 0.0, "return_touchdown": 0.0,
             })
 
     df = pd.DataFrame(rows)

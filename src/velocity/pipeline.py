@@ -59,7 +59,7 @@ def build(pbp: pd.DataFrame, play_cfg: PlayConfig, elo_cfg: EloConfig, wp_range=
         table["spread"] = table["net"] * metrics["pts_per_100_elo"] / 100
         runs[name] = Run(VARIANTS[name], cfg, events, res, metrics, table, offseason_table(events, res, feats), elo_cfg)
 
-        fresh_cfg = replace(elo_cfg, season_regression=1.0, coach_regression=1.0)
+        fresh_cfg = replace(elo_cfg, season_regression=1.0, coach_regression=1.0, vcity_regression=1.0)
         fresh = run_elo(events, fresh_cfg)
         fresh_metrics = summarize(events, fresh, eval_start(seasons))
         fresh_table = team_table(events, fresh)
@@ -112,7 +112,8 @@ def ratings_table(runs: dict[str, Run], scope: str = "") -> pd.DataFrame:
 
     scope="" for full history, SEASON_ONLY for this-season-only ratings.
     """
-    ng = runs["ng" + scope].table[["team", "net", "net_rank", "off", "off_rank", "def", "def_rank", "spread"]]
+    ng = runs["ng" + scope].table[["team", "net", "net_rank", "off", "off_rank", "def", "def_rank", "spread",
+                                   "v_off", "v_off_rank", "v_def", "v_def_rank", "v_net", "v_net_rank"]]
     return runs["all" + scope].table.merge(ng.add_suffix("_ng").rename(columns={"team_ng": "team"}), on="team")
 
 
@@ -130,8 +131,9 @@ def write_outputs(runs: dict[str, Run], out_dir: Path, play_log: bool = False) -
     if play_log:
         run = runs["all"]
         log = run.events.df[["season", "week", "game_id", "play_id", "kind", "event", "att_team", "def_team",
-                             "down", "ydstogo", "yards_gained", "y", "desc"]].copy()
-        log["expected"], log["delta"] = run.result.p, run.result.delta
+                             "down", "ydstogo", "yards_gained", "y", "boom", "havoc", "desc"]].copy()
+        core = run.events.core
+        log["expected"], log["delta"] = run.result.p[core], run.result.delta[core]
         log.to_parquet(out_dir / "events.parquet", index=False)
         written.append("events.parquet")
     return written

@@ -27,13 +27,15 @@ COLUMNS = [
     "interception", "fumble_lost", "penalty", "penalty_team", "timeout", "timeout_team",
     "two_point_attempt", "two_point_conv_result", "half_seconds_remaining", "wp", "desc",
     "qtr", "time", "total_home_score", "total_away_score",
+    "yardline_100", "goal_to_go", "field_goal_result", "touchdown", "td_team", "sack", "tackled_for_loss",
+    "return_yards", "return_touchdown", "fumble_recovery_1_yards", "safety",
 ]
 
 # Relocated franchises keep one rating history under their current abbreviation; the
 # gamebook codes show up in some roster files.
 FRANCHISE = {"OAK": "LV", "SD": "LAC", "STL": "LA", "SL": "LA",
              "ARZ": "ARI", "BLT": "BAL", "CLV": "CLE", "HST": "HOU"}
-TEAM_COLUMNS = ["home_team", "away_team", "posteam", "defteam", "penalty_team", "timeout_team", "team"]
+TEAM_COLUMNS = ["home_team", "away_team", "posteam", "defteam", "penalty_team", "timeout_team", "team", "td_team"]
 
 
 def current_season(today: date | None = None) -> int:

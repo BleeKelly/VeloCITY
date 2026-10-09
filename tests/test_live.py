@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from velocity import live
 from velocity.coaching import coach_events
 from velocity.config import PlayConfig
@@ -17,8 +19,10 @@ def test_espn_game_scores_like_nflverse():
 
     plays = select_plays(rows, PlayConfig())
     by_team = plays.groupby("att_team")["y"].agg(["count", "sum"])
-    assert by_team.loc["BUF"].tolist() == [56, 28.5]
+    assert by_team.loc["BUF"].tolist() == [58, 30.5]  # includes BUF's two made field goals
     assert by_team.loc["NE"].tolist() == [75, 41.0]
+    assert (plays["play_type"] == "field_goal").sum() == 2
+    assert plays["boom"].sum() == pytest.approx(6.025, abs=0.01)  # nflverse 5.875: ESPN yardage differs on a few plays
 
     coach = coach_events(rows).groupby("event")["y"].agg(["count", "sum"])
     assert coach.loc["penalty"].tolist() == [10, 5.0]

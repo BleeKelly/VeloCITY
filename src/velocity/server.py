@@ -40,7 +40,8 @@ EVENTS_DIR = data.OUTPUT_DIR / "events"
 LIVE_POLL_SECONDS = 45
 IDLE_POLL_SECONDS = 600
 EVENT_COLUMNS = ["game_id", "play_id", "kind", "event", "att_team", "def_team", "play_type", "qtr", "time",
-                 "down", "ydstogo", "yards_gained", "y", "desc", "total_home_score", "total_away_score"]
+                 "down", "ydstogo", "yards_gained", "y", "desc", "total_home_score", "total_away_score",
+                 "weight", "boom", "havoc"]
 COACH_DISCLAIMER = COACHING_DOC.split("\n\n")[1].replace("\n", " ")
 STATIC_TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
                 ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml"}
@@ -87,8 +88,9 @@ def super_bowls(games: pd.DataFrame) -> dict[int, dict]:
 
 
 def slim_events(events: Events, p: np.ndarray, delta: np.ndarray) -> pd.DataFrame:
+    """Plays and coaching events for game pages (V-City events show up as columns on plays)."""
     df = events.df[EVENT_COLUMNS].copy()
-    df["p"], df["delta"] = p, delta
+    df["p"], df["delta"] = p[events.core], delta[events.core]
     df["season"] = events.df["season"].to_numpy()
     return df
 
@@ -180,7 +182,7 @@ class State:
                 history = game_history(r.events, r.result)
                 ev = r.events
                 ev.df = ev.df.iloc[0:0]
-                ev.attacker = ev.defender = ev.y = ev.base = ev.kind = ev.game = ev.season = None
+                ev.attacker = ev.defender = ev.y = ev.base = ev.kind = ev.weight = ev.game = ev.season = ev.core = None
                 snap[name] = Snapshot(r.label, r.play_cfg, ev, r.result.state, r.metrics, r.table, games, history,
                                       r.offseason, r.elo_cfg)
             del runs, events
@@ -264,7 +266,7 @@ class State:
         """Ratings table for one scope ("" full history, SEASON_ONLY this season), with live changes."""
         snap = self.snap["all" + scope]
         table = ratings_table(self.snap, scope)
-        now = pd.DataFrame(self.ratings_now("all" + scope), columns=["off", "def", "coach"])
+        now = pd.DataFrame(self.ratings_now("all" + scope), columns=list(UNITS))[["off", "def", "coach"]]
         now["team"] = snap.events.teams
         now["net"] = (now["off"] - now["off"].mean()) + (now["def"] - now["def"].mean())
         table = table.merge(now.add_prefix("live_").rename(columns={"live_team": "team"}), on="team")
@@ -397,18 +399,23 @@ class State:
         if hist.empty:
             return None
         hist = hist.assign(net=hist["off_post"] + hist["def_post"] - 3000, off=hist["off_post"] - 1500,
-                           dfn=hist["def_post"] - 1500, coach=hist["coach_post"] - 1500)
+                           dfn=hist["def_post"] - 1500, coach=hist["coach_post"] - 1500,
+                           v_off=hist["boom_post"] - 1500, v_def=hist["havoc_post"] - 1500,
+                           v_net=hist["boom_post"] + hist["boom_def_post"] + hist["havoc_post"]
+                           + hist["havoc_off_post"] - 6000)
         teams = []
         for team, g in hist.groupby("team"):
             last = g.iloc[-1]
             teams.append({
                 "team": team, "net": round(last["net"], 1), "off": round(last["off"], 1),
                 "def": round(last["dfn"], 1), "coach": round(last["coach"], 1),
+                "v_off": round(last["v_off"], 1), "v_def": round(last["v_def"], 1), "v_net": round(last["v_net"], 1),
                 "w": int((g["points_for"] > g["points_against"]).sum()),
                 "l": int((g["points_for"] < g["points_against"]).sum()),
                 "t": int((g["points_for"] == g["points_against"]).sum()),
                 "points": records(g[["week", "season_type", "game_id", "opponent", "home", "points_for",
-                                     "points_against", "net", "off", "dfn"]].rename(columns={"dfn": "def"}), 1),
+                                     "points_against", "net", "off", "dfn", "v_off", "v_def", "v_net"]]
+                                  .rename(columns={"dfn": "def"}), 1),
             })
         teams.sort(key=lambda t: -t["net"])
         return {"season": year, "seasons": sorted(int(x) for x in snap.history["season"].unique()), "teams": teams,
@@ -466,7 +473,7 @@ def make_handler(state: State):
             q = {k: v[0] for k, v in parse_qs(url.query).items()}
             parts = [p for p in url.path.split("/") if p]
             try:
-                if not parts or parts[0] in ("team", "game", "games", "season", "rules"):
+                if not parts or parts[0] in ("team", "game", "games", "season", "rules", "chart"):
                     return self.send(200, (WEB / "index.html").read_bytes(), STATIC_TYPES[".html"])
                 if parts[0] == "static" and len(parts) == 2 and self.static(parts[1]):
                     return

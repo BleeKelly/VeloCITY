@@ -2,9 +2,11 @@
 
 # VeloCITY
 
-Play-by-play **Elo** for the NFL. Every run, pass and punt is a one-play game between an
-offense and a defense; every penalty, two-point try and early timeout is a game between two
-coaching staffs. Ratings go back to 1999, update live during games, and come with a web app.
+Play-by-play **Elo** for the NFL, plus **V-City**, a second rating for the boom-or-bust plays Elo
+can't see. Every run, pass, punt and field goal is a one-play game between an offense and a
+defense; every penalty, two-point try and early timeout is a game between two coaching staffs.
+Ratings go back to 1999, update live during games, and come with a web app that plots every team
+on Elo × V-City.
 
 ## The rules
 
@@ -17,10 +19,14 @@ without touching code. Each play scores the offense 1 (win), ½ (tie) or 0 (loss
 | 3rd | first down | short by ≤ 1 yard (leaves 4th-and-1 or shorter) | anything else |
 | 4th, going for it | first down | – | turnover on downs |
 | Punt | – | always | – |
+| Field goal | made | – | missed or blocked |
 
-A turnover is always a loss. Penalties, two-point tries and timeouts are **coaching**, not
+A turnover is always a loss. **Plays that matter more move ratings more:** red-zone snaps
+(inside the 20) count 1.5×, goal to go 2×, field-goal attempts 1.5×. The weight comes from the
+situation *before* the snap, so it never favors one side's result (weighting by result would let
+every team that scores inflate). Penalties, two-point tries and timeouts are **coaching**, not
 offense/defense: any play with an accepted penalty is dropped from the O/D ratings. Kneels,
-spikes, field goals and kickoffs are left out (special teams are a future unit).
+spikes and kickoffs are left out (special teams are a future unit).
 
 **Coaching staff Elo** (one rating per team's staff): every accepted penalty is a loss for the
 flagged team's staff, a charged timeout with more than 2 minutes left in the half is a loss
@@ -28,13 +34,48 @@ for the team that called it, and a two-point try is won by the offense's staff o
 *Disclaimer: it will suck.* Players commit the penalties and these events are a thin slice of
 coaching. It barely predicts anything (game correlation ≈ 0.06–0.09).
 
+## V-City
+
+**V**olatile **C**hunks & **I**ntercepted **T**hrows, **Y**'know. (It had to fit the name.)
+
+Elo rewards consistency: winning down after down, long sustained drives, stingy defense. It
+misses boom-or-bust teams, because a 60-yard touchdown and a 5-yard gain on 1st-and-10 are both
+just "wins". V-City rates the plays Elo can't see. Every run and pass also scores, from 0 to 1:
+
+- **Big plays (offense):** credit starts at 10 yards and is full at 50+, plus a small 0.15 bonus
+  for a touchdown scored from outside the red zone (finishing a hard play). A gain that ends in a
+  turnover isn't a big play. Defenses are rated on preventing them.
+- **Havoc (defense):** a sack is 0.4 + 0.04 per yard lost; a tackle for loss 0.15 + 0.03 per yard;
+  both ×1.25 on 3rd and 4th down. An interception or lost fumble is 0.5, +0.25 if forced in the
+  backfield (strip-sacks) and +0.01 per return yard; return touchdowns and safeties are 1.
+  Offenses are rated on avoiding havoc.
+
+These run through the same Elo engine (opponent-adjusted, against what the down, distance and
+field position predict) with their own K (3) and off-season pull (50%). Why these definitions:
+on 2016–2025, play win rate alone explains 60% of team points per game; graded big plays add 14
+points of that (the yes/no "run 10+ / pass 20+" definition adds only 6), and graded havoc explains
+about 10× more of points allowed than a yes/no count. Big plays and havoc are streakier year to
+year than consistency, which is why they're regressed harder.
+
+**Elo × V-City charts** put every team on both axes, with quadrants at league average:
+
+| | Offense | Defense | Net |
+|---|---|---|---|
+| High Elo, high V-City | Explosive & efficient | Dominant | Contenders |
+| High Elo, low V-City | Grinders | Disciplined | Grinders |
+| Low Elo, high V-City | Boom or bust | Feast or famine | Boom or bust |
+| Low Elo, low V-City | Struggling | Struggling | Rebuilding |
+
+Offense = offensive Elo vs big plays; defense = defensive Elo vs havoc; net = net Elo vs net
+V-City (big plays and havoc made, minus allowed). Click a team to trace its season.
+
 ## The model
 
 - Expected score for a play = `1 / (1 + 10^-((off − def)/400 + baseline))`. The baseline is the
   league's expected score for that down & distance (punts get their own cell) plus a small home
   field edge, so ratings measure performance *above what the situation predicts*.
-- `K = 1.5` rating points per play (about 120 plays per team per game). Log loss alone picks
-  0.75; 1.5 reacts twice as fast for a small cost (game correlation 0.327 → 0.321).
+- `K = 1.5` rating points per play (about 120 plays per team per game), times the play's weight.
+  Log loss alone picks 0.75; 1.5 reacts twice as fast for a small cost.
 - Between seasons ratings are pulled toward 1500. With **decay** (default), the pull depends on
   the off-season: returning snap share, lineup age and a head-coach change (snap counts and
   week-1 rosters, so 2014 on). Honest read: the coaching-change term helps; the roster terms are
@@ -42,8 +83,9 @@ coaching. It barely predicts anything (game correlation ≈ 0.06–0.09).
 - Four rating sets: all plays or no garbage time (offense win probability outside 5–95%),
   each with full history or **this season only** (everyone restarts at 1500).
 
-From 2000 on, the pregame rating edge picks the winner about **62%** of the time (home team:
-56%), and 100 Elo of net edge ≈ 22 points of margin.
+From 2000 on, the pregame Elo edge picks the winner about **62%** of the time (home team: 56%).
+The pregame V-City edge tracks final margins slightly better than Elo does (r = 0.34 vs 0.31),
+so the two are complementary.
 
 ## Quick start
 
@@ -85,12 +127,14 @@ Ratings board (sortable both ways; full history or this season only; all plays o
 time), team pages (ratings over time for any single season or 5/10/all years, game log,
 off-season carryover, coaching chart), Seasons (all 32 teams as small multiples on one scale),
 games by week with pregame chances, every game play by play with each side's chance to win
-the play, the result, and a zero-sum rating swing chart, and a Rules page showing the scoring
-rules currently in effect. Live games update every ~45 s.
+the play, the result, weighted plays and big-play/havoc markers, and a zero-sum rating swing
+chart, the Elo × V-City charts for any season, and a Rules page showing the scoring rules
+currently in effect. Live games update every ~45 s.
 
 JSON API: `/api/summary`, `/api/team/{abbr}?variant=`, `/api/season/{year}?variant=`,
 `/api/games?season=&week=`, `/api/game/{game_id}`, `/api/widget`, `/api/status`.
-`variant` is `all`, `ng`, `all_season` or `ng_season`.
+`variant` is `all`, `ng`, `all_season` or `ng_season`. Ratings rows carry `v_off` (big plays),
+`v_def` (havoc) and `v_net` with ranks; `/api/season/{year}` has them per game for every team.
 
 ## Rules admin
 
@@ -103,13 +147,18 @@ scored, without editing code:
   not counted) and whether a turnover is always a loss.
 - **Coaching staff:** turn penalties, timeouts and two-point tries on or off, and set how late
   in the half a timeout stops counting (120 s by default).
-- **Model:** K per play and per coaching event, the off-season pull toward average, team-specific
+- **Field goals and weights:** count field goals or not; the red-zone, goal-to-go and field-goal
+  multipliers.
+- **V-City:** where big-play credit starts and becomes full, the long-TD bonus, and every havoc
+  value (sacks, tackles for loss, the 3rd/4th-down multiplier, takeaways, backfield bonus, return
+  yards, return TDs, safeties).
+- **Model:** K per play, per coaching event and per V-City play, the off-season pulls, team-specific
   decay on/off, and the garbage-time win-probability cutoffs.
 
 As you edit, a **Try a play** box scores a play you type in, and a preview shows how the last
 full season's real plays would split into wins, ties and losses for each down under the new rules,
 with the change from the saved rules. **Save & rescore** writes the settings and rescores every
-season since 1999 in the background (about 20 seconds); the public site picks up the new ratings
+season since 1999 in the background (about a minute); the public site picks up the new ratings
 and its Rules page updates.
 
 Settings live in `settings.json` next to the data (`/data/settings.json` in the container,
@@ -186,6 +235,7 @@ live games.
 
 ## Extending
 
-Ratings live in slots, one per (team, unit): today `off`, `def`, `coach`. Special teams can be
+Ratings live in slots, one per (team, unit): today `off`, `def`, `coach`, and the V-City units
+`boom`, `boom_def`, `havoc`, `havoc_off`. Special teams can be
 added as new units (kick coverage vs. return, kicker vs. distance) with their own play filters
 and scoring in `outcomes.py`, without changing the update loop in `model.run_elo`.
