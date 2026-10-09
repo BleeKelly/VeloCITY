@@ -106,7 +106,7 @@ function renderEditor() {
 
     h("section", { class: "card" },
       h("h2", {}, "V-City"),
-      h("p", { class: "card-sub" }, "Volatile Chunks & Intercepted Throws, Y'know: the second axis. Every run and pass also scores a big play for the offense and havoc for the defense, from 0 to 1."),
+      h("p", { class: "card-sub" }, "Volatile Chunks & Impressive Turnovers, Y'know: the second axis. Every run and pass also scores a big play for the offense and havoc for the defense, from 0 to 1."),
       h("h3", { class: "mini-h" }, "Big plays (offense)"),
       h("div", { class: "field-row" },
         field("Credit starts at (yards)", numberInput(r.boom.start, (v) => { r.boom.start = v; changed(false); }, { min: 0, max: 99 })),

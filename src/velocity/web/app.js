@@ -269,7 +269,7 @@ function sparkline(values) {
     s("circle", { cx: x(last), cy: y(values[last]), r: 3, fill: "var(--accent)", stroke: "var(--surface)", "stroke-width": 1.5 }));
 }
 
-const VCITY = "Volatile Chunks & Intercepted Throws, Y'know";
+const VCITY = "Volatile Chunks & Impressive Turnovers, Y'know";
 
 /**
  * Team scatter: one logo per team on two axes, quadrants split at league average (0, 0).

@@ -36,7 +36,7 @@ coaching. It barely predicts anything (game correlation ≈ 0.06–0.09).
 
 ## V-City
 
-**V**olatile **C**hunks & **I**ntercepted **T**hrows, **Y**'know. (It had to fit the name.)
+**V**olatile **C**hunks & **I**mpressive **T**urnovers, **Y**'know. (It had to fit the name.)
 
 Elo rewards consistency: winning down after down, long sustained drives, stingy defense. It
 misses boom-or-bust teams, because a 60-yard touchdown and a 5-yard gain on 1st-and-10 are both
