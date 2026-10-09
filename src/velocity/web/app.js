@@ -46,7 +46,10 @@ const weekName = (season, week) => isPlayoff(season, week)
   : `Week ${week}`;
 const champion = (season) => (store.summary && store.summary.champions ? store.summary.champions[season] : null);
 const wonTitle = (team, season) => { const c = champion(season); return !!c && c.team === team; };
+const lostTitle = (team, season) => { const c = champion(season); return !!c && c.runner_up === team; };
+const isSuperBowl = (g) => { const c = champion(g.season); return !!c && c.game_id === g.game_id; };
 const trophy = (title = "Won the Super Bowl") => h("span", { class: "trophy", title, "aria-label": title, role: "img" }, "🏆");
+const silver = (title = "Super Bowl runner-up") => h("span", { class: "trophy", title, "aria-label": title, role: "img" }, "🥈");
 const cleanDesc = (d) => (d || "").replace(/^\(\s*:?\d*:?\d+\)\s*/, "");
 
 /* ---------- data ---------- */
@@ -184,7 +187,7 @@ function lineChart(opts) {
     }
     for (const mk of (opts.marks ? opts.marks(pts) : [])) {
       const v = pts[mk.i] && pts[mk.i][mk.key];
-      if (v != null) svg.append(s("circle", { class: "sb-mark", cx: x(mk.i), cy: y(v), r: 5.5 }, s("title", {}, mk.title || "")));
+      if (v != null) svg.append(s("circle", { class: `sb-mark ${mk.cls || ""}`, cx: x(mk.i), cy: y(v), r: 5.5 }, s("title", {}, mk.title || "")));
     }
     const ends = [];
     for (const se of opts.series) {
@@ -461,10 +464,10 @@ async function viewTeam(app, abbr, params) {
     const xMarks = (ps) => {
       if (oneSeason) return ps.map((p, i) => ({ i, label: isPlayoff(p.season, p.week) ? (champion(p.season) && champion(p.season).game_id === p.game_id ? "SB" : "P") : `W${p.week}`, minGap: 26 }));
       const marks = [];
-      ps.forEach((p, i) => { if (i === 0 || p.season !== ps[i - 1].season) marks.push({ i, label: `${p.season}${wonTitle(abbr, p.season) ? " 🏆" : ""}`, major: true, minGap: 40 }); });
+      ps.forEach((p, i) => { if (i === 0 || p.season !== ps[i - 1].season) marks.push({ i, label: `${p.season}${wonTitle(abbr, p.season) ? " 🏆" : lostTitle(abbr, p.season) ? " 🥈" : ""}`, major: true, minGap: 40 }); });
       return marks;
     };
-    const title = (p) => `${p.season} ${weekName(p.season, p.week)}${wonTitle(abbr, p.season) && champion(p.season).game_id === p.game_id ? " 🏆" : ""} · ${p.home ? "vs" : "@"} ${p.opponent} · ${p.points_for > p.points_against ? "W" : p.points_for < p.points_against ? "L" : "T"} ${fmt0(p.points_for)}–${fmt0(p.points_against)}${p.provisional ? " · live" : ""}`;
+    const title = (p) => `${p.season} ${weekName(p.season, p.week)}${isSuperBowl(p) ? (wonTitle(abbr, p.season) ? " 🏆" : " 🥈") : ""} · ${p.home ? "vs" : "@"} ${p.opponent} · ${p.points_for > p.points_against ? "W" : p.points_for < p.points_against ? "L" : "T"} ${fmt0(p.points_for)}–${fmt0(p.points_against)}${p.provisional ? " · live" : ""}`;
     chartBox.replaceChildren(
       h("div", { class: "chart-head" },
         h("div", {}, h("h2", {}, "Ratings over time"), h("p", { class: "card-sub", style: { margin: 0 } }, "Elo above average after each game. Click a point to open the game.")),
@@ -476,8 +479,9 @@ async function viewTeam(app, abbr, params) {
         points: pts, zero: true, height: 300, ariaLabel: `${abbr} offense, defense and net ratings over time`,
         series: [{ key: "net", label: "Net", color: "var(--series-3)" }, { key: "off", label: "Offense", color: "var(--series-1)" }, { key: "def", label: "Defense", color: "var(--series-2)" }],
         yFormat: (v, step) => signed(v, step < 1 ? 1 : 0), tipFormat: (v) => signed(v), xMarks, title,
-        marks: (ps) => ps.map((p, i) => ({ i, key: "net", title: `${p.season}: won the Super Bowl` }))
-          .filter((mk) => wonTitle(abbr, ps[mk.i].season) && champion(ps[mk.i].season).game_id === ps[mk.i].game_id),
+        marks: (ps) => ps.map((p, i) => ({ i, p })).filter(({ p }) => isSuperBowl(p)).map(({ i, p }) => wonTitle(abbr, p.season)
+          ? { i, key: "net", title: `${p.season}: won the Super Bowl` }
+          : { i, key: "net", cls: "silver", title: `${p.season}: Super Bowl runner-up` }),
         onClick: (p) => go(`/game/${p.game_id}`),
       }));
     coachBox.replaceChildren(
@@ -511,7 +515,7 @@ async function viewTeam(app, abbr, params) {
           const d = g.net - g.net_pre;
           const res = g.points_for > g.points_against ? "W" : g.points_for < g.points_against ? "L" : "T";
           return h("tr", { class: "row-link", onclick: () => go(`/game/${g.game_id}`) },
-            h("td", { class: "left" }, weekName(g.season, g.week), champion(g.season) && champion(g.season).game_id === g.game_id && res === "W" ? [" ", trophy()] : null, g.provisional ? h("span", { class: "badge prov", style: { marginLeft: "6px" } }, "live") : null),
+            h("td", { class: "left" }, weekName(g.season, g.week), isSuperBowl(g) ? [" ", res === "W" ? trophy() : silver()] : null, g.provisional ? h("span", { class: "badge prov", style: { marginLeft: "6px" } }, "live") : null),
             h("td", { class: "left" }, h("span", { class: "team-cell" }, h("span", { class: "muted" }, g.home ? "vs" : "@"), logo(g.opponent), g.opponent)),
             h("td", { class: "num" }, h("span", { class: `res-badge res-${res}` }, res), " ", `${fmt0(g.points_for)}–${fmt0(g.points_against)}`),
             h("td", { class: "num" }, signed(g.off)), h("td", { class: "num" }, signed(g.def)), h("td", { class: "num" }, h("strong", {}, signed(g.net))),
@@ -521,6 +525,7 @@ async function viewTeam(app, abbr, params) {
 
   const seasonRows = [...data.seasons].reverse();
   const titles = Object.entries(store.summary.champions || {}).filter(([, c]) => c.team === abbr).map(([y]) => y);
+  const losses = Object.entries(store.summary.champions || {}).filter(([, c]) => c.runner_up === abbr).map(([y]) => y);
   drawCharts(); drawLog();
 
   // Off-season carryover: share of each rating's edge kept going into a season.
@@ -549,8 +554,10 @@ async function viewTeam(app, abbr, params) {
     h("section", { class: "team-hero", style: { "--team": m.color, "--team-alt": m.alt } },
       h("div", { class: "title" }, logo(abbr, "lg"),
         h("div", {}, h("h1", {}, m.name || abbr), h("div", { class: "sub" }, `${cur.head_coach || ""} · ${ordinal(cur.net_rank)} of 32 by net rating${store.scope === "season" ? " this season" : ""}`),
-          titles.length ? h("div", { class: "titles" }, trophy(`${titles.length} Super Bowl${titles.length > 1 ? "s" : ""} since ${store.summary.first_season}`),
-            `Super Bowl champions: ${titles.join(", ")}`) : null),
+          h("div", { class: "hero-badges" },
+            titles.length ? h("div", { class: "titles" }, trophy(`${titles.length} Super Bowl${titles.length > 1 ? "s" : ""} since ${store.summary.first_season}`),
+              `Super Bowl champions: ${titles.join(", ")}`) : null,
+            losses.length ? h("div", { class: "titles silver" }, silver(), `Runner-up: ${losses.join(", ")}`) : null)),
         h("div", { class: "head-tools" }, toggles(() => render({ keepScroll: true })))),
       h("div", { class: "tiles" },
         tile("Net", signed(cur.net), `${ordinal(cur.net_rank)} · ${signed(cur.spread)} pts vs average`, "hero"),
@@ -566,8 +573,8 @@ async function viewTeam(app, abbr, params) {
         h("div", { class: "card" }, h("h2", {}, "Seasons"),
           h("div", { class: "table-wrap", style: { maxHeight: "420px", overflowY: "auto" } }, h("table", {},
             h("thead", {}, h("tr", {}, h("th", { class: "left" }, "Season"), h("th", {}, "Record"), h("th", {}, "Net"), h("th", {}, "Off"), h("th", {}, "Def"))),
-            h("tbody", {}, seasonRows.map((r) => h("tr", { class: `row-link ${wonTitle(abbr, r.season) ? "champ" : ""}`, title: wonTitle(abbr, r.season) ? "Won the Super Bowl · chart this season" : "Chart this season", onclick: () => { pickSeason(r.season); chartBox.scrollIntoView({ behavior: "smooth", block: "start" }); } },
-              h("td", { class: "left" }, r.season, wonTitle(abbr, r.season) ? [" ", trophy()] : null),
+            h("tbody", {}, seasonRows.map((r) => h("tr", { class: `row-link ${wonTitle(abbr, r.season) ? "champ" : lostTitle(abbr, r.season) ? "runner-up" : ""}`, title: wonTitle(abbr, r.season) ? "Won the Super Bowl · chart this season" : lostTitle(abbr, r.season) ? "Super Bowl runner-up · chart this season" : "Chart this season", onclick: () => { pickSeason(r.season); chartBox.scrollIntoView({ behavior: "smooth", block: "start" }); } },
+              h("td", { class: "left" }, r.season, wonTitle(abbr, r.season) ? [" ", trophy()] : lostTitle(abbr, r.season) ? [" ", silver()] : null),
               h("td", { class: "num" }, `${r.w}-${r.l}${r.t ? `-${r.t}` : ""}`),
               h("td", { class: "num" }, h("strong", {}, signed(r.net)), h("span", { class: "rk" }, ordinal(r.net_rank))),
               h("td", { class: "num" }, signed(r.off_post - 1500), h("span", { class: "rk" }, ordinal(r.off_post_rank))),
@@ -595,7 +602,7 @@ async function viewGames(app, params) {
     return h("a", { class: "game-card", href: `/game/${g.game_id}`, "data-link": true },
       h("div", { class: "slate-meta" }, h("span", {}, g.location === "Neutral" ? "Neutral site" : `at ${g.home_team}`),
         h("span", {}, g.provisional ? h("span", { class: "badge prov" }, "Live data") : null, upset ? h("span", { class: "badge upset" }, "Upset") : null,
-          champion(g.season) && champion(g.season).game_id === g.game_id ? h("span", { class: "champ-tag" }, "🏆 Super Bowl") : null)),
+          isSuperBowl(g) ? h("span", { class: "champ-tag" }, "🏆 Super Bowl") : null)),
       h("div", { class: "teams" }, side(g.away_team, g.away_score, awayWon, final && homeWon), side(g.home_team, g.home_score, homeWon, final && awayWon)),
       probBar(g.away_team, 1 - g.home_win_prob, g.home_team),
       h("div", { class: "prob-labels" }, h("span", {}, "Pregame chance"), h("span", {}, `Spread ${favHome ? g.home_team : g.away_team} ${signed(-Math.abs(g.home_spread))}`)));
@@ -689,7 +696,8 @@ async function viewGame(app, gameId) {
     h("div", { class: "card", style: { marginTop: "18px" } },
       h("div", { class: "slate-meta", style: { marginBottom: "10px" } },
         h("span", {}, `${g.season} ${weekName(g.season, g.week)} · ${g.game_date}${g.location === "Neutral" ? " · neutral site" : ""}`,
-          champion(g.season) && champion(g.season).game_id === g.game_id ? [" · ", trophy(`${champion(g.season).team} won the Super Bowl`), ` ${champion(g.season).team} champions`] : null),
+          isSuperBowl(g) ? [" · ", trophy(`${champion(g.season).team} won the Super Bowl`), ` ${champion(g.season).team} champions · `,
+            silver(), ` ${champion(g.season).runner_up} runner-up`] : null),
         h("span", {}, isLive ? h("span", { class: "badge live" }, "Live") : null, " ", data.provisional ? h("span", { class: "badge prov" }, "Provisional · ESPN feed") : null)),
       h("div", { class: "scoreboard" },
         h("a", { class: "side", href: `/team/${away}`, "data-link": true }, logo(away, "lg"), h("div", {}, h("div", { class: "tname" }, meta(away).short || away), h("div", { class: "muted" }, "Away")), h("span", { class: "big" }, fmt0(as))),
@@ -739,11 +747,13 @@ async function viewSeason(app, year) {
   const sel = h("select", { class: "select", "aria-label": "Season", onchange: (e) => go(`/season/${e.target.value}`) },
     [...data.seasons].reverse().map((y) => h("option", { value: y, selected: y === data.season ? true : null }, y)));
   const champ = data.champion && data.champion.team;
-  const cards = data.teams.map((t, i) => h("div", { class: `multiple ${t.team === champ ? "champ" : ""}` },
+  const second = data.champion && data.champion.runner_up;
+  const cards = data.teams.map((t, i) => h("div", { class: `multiple ${t.team === champ ? "champ" : t.team === second ? "runner-up" : ""}` },
     h("a", { class: "multiple-head", href: `/team/${t.team}?season=${data.season}`, "data-link": true },
       h("span", { class: "rank" }, i + 1), logo(t.team), h("strong", {}, t.team),
       h("span", { class: "muted" }, `${t.w}-${t.l}${t.t ? `-${t.t}` : ""}`),
       t.team === champ ? h("span", { class: "champ-tag" }, "🏆 Champion") : null,
+      t.team === second ? h("span", { class: "champ-tag silver" }, "🥈 Runner-up") : null,
       h("span", { class: "multiple-net num" }, signed(t.net))),
     lineChart({
       points: t.points, compact: true, legend: false, endLabels: false, zero: true, yDomain: domain, height: 96,
@@ -755,7 +765,7 @@ async function viewSeason(app, year) {
     })));
   app.replaceChildren(
     h("div", { class: "page-head" },
-      h("div", {}, h("h1", {}, `${data.season} season`, champ ? h("span", { class: "titles", style: { marginLeft: "12px", verticalAlign: "middle" } }, trophy(), `${champ} won the Super Bowl`) : null),
+      h("div", {}, h("h1", {}, `${data.season} season`, champ ? h("span", { class: "titles", style: { marginLeft: "12px", verticalAlign: "middle" } }, trophy(), `${champ} beat ${second} ${data.champion.score} in the Super Bowl`) : null),
         h("div", { class: "sub" }, `Every team's net rating (offense + defense above average) after each game, on one shared scale. Sorted by where they finished.${store.scope === "season" ? " This season only: everyone starts at 0." : ""}`)),
       h("div", { class: "head-tools" }, sel, toggles(() => render({ keepScroll: true })))),
     h("div", { class: "multiples" }, cards));

@@ -71,7 +71,7 @@ def records(df: pd.DataFrame, digits: int = 2) -> list[dict]:
 
 
 def super_bowls(games: pd.DataFrame) -> dict[int, dict]:
-    """{season: {team, game_id}} from each finished season's last playoff game."""
+    """{season: {team, runner_up, score, game_id}} from each finished season's last playoff game."""
     post = games[games["season_type"] == "POST"].sort_values("game_date")
     out = {}
     for season, g in post.groupby("season"):
@@ -79,7 +79,9 @@ def super_bowls(games: pd.DataFrame) -> dict[int, dict]:
         sb_week = 22 if season >= 2021 else 21
         if season < data.current_season() or last["week"] == sb_week:
             home_won = last["home_score"] > last["away_score"]
-            out[int(season)] = {"team": last["home_team"] if home_won else last["away_team"],
+            win, lose = ("home", "away") if home_won else ("away", "home")
+            out[int(season)] = {"team": last[f"{win}_team"], "runner_up": last[f"{lose}_team"],
+                                "score": f"{int(last[f'{win}_score'])}–{int(last[f'{lose}_score'])}",
                                 "game_id": last["game_id"]}
     return out
 

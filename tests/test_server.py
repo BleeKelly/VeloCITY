@@ -18,4 +18,4 @@ def test_super_bowl_is_each_finished_seasons_last_playoff_game():
         {"game_id": f"{cur}_19_A_B", "season": cur, "season_type": "POST", "week": 19, "game_date": f"{cur + 1}-01-10",
          "home_team": "BUF", "away_team": "MIA", "home_score": 20, "away_score": 10},
     ])
-    assert super_bowls(games) == {2018: {"team": "NE", "game_id": "2018_21_NE_LA"}}
+    assert super_bowls(games) == {2018: {"team": "NE", "runner_up": "LA", "score": "13–3", "game_id": "2018_21_NE_LA"}}

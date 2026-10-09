@@ -18,6 +18,7 @@
   --spark: #a9a79f;
   --accent: #2a78d6;
   --gold: #c99a06;
+  --silver: #8e959c;
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 8px 24px rgba(0, 0, 0, 0.06);
   --radius: 14px;
   --font: system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -43,6 +44,8 @@
     --spark: #5f5e59;
     --accent: #3987e5;
     --gold: #e0b43a;
+  --silver: #aeb5bd;
+    --silver: #aeb5bd;
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.35);
   }
 }
@@ -66,6 +69,7 @@
   --spark: #5f5e59;
   --accent: #3987e5;
   --gold: #e0b43a;
+  --silver: #aeb5bd;
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.35);
 }
 
@@ -398,3 +402,10 @@ tr.champ td:first-child { box-shadow: inset 3px 0 0 var(--gold); }
 .champ-tag { font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; padding: 2px 7px;
   border-radius: 6px; background: color-mix(in srgb, var(--gold) 20%, transparent); color: var(--ink); }
 .chart .sb-mark { fill: var(--gold); stroke: var(--surface); stroke-width: 2; }
+tr.runner-up td { background: color-mix(in srgb, var(--silver) 12%, transparent); }
+tr.runner-up td:first-child { box-shadow: inset 3px 0 0 var(--silver); }
+.titles.silver { background: color-mix(in srgb, var(--silver) 16%, var(--surface)); border-color: color-mix(in srgb, var(--silver) 45%, var(--border)); }
+.multiple.runner-up { border-color: var(--silver); box-shadow: 0 0 0 1px var(--silver), var(--shadow); }
+.champ-tag.silver { background: color-mix(in srgb, var(--silver) 22%, transparent); }
+.chart .sb-mark.silver { fill: var(--silver); }
+.hero-badges { display: flex; flex-wrap: wrap; gap: 6px; }
