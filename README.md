@@ -223,17 +223,22 @@ Responses carry cache headers meant for a CDN in front of the public site:
 
 | Response | Cache-Control |
 |---|---|
-| `/static/app.js?v=…`, `app.css?v=…` (versioned by content) | 1 year, immutable |
-| Data with `?r=<revision>` (team, season, games, game) | 1 year, immutable: the app asks for a new revision whenever ratings change (a rebuild or a live play) |
-| `/api/summary`, live data | 15 s in browsers, 30 s at the edge |
+| Everything under `/static/` linked from the pages (scripts, styles, icons, logo, manifest), versioned by content | 1 year, immutable |
+| Data with `?r=<revision>` (team, season, games, game) | 1 year, immutable. Anything live games can touch (team pages, this season's games, this week's games) uses the live revision, which changes with every new play; season views, past seasons and finished games use a rebuild-only revision, so their cached copies last through game days |
+| `/api/summary` | while a game is on or within 15 min of kickoff: 15 s in browsers, 30 s at the edge; otherwise 1 min and 5 min |
 | HTML pages | revalidate in browsers, 5 min at the edge |
-| Icons, logo | 1 day |
+| Root icons (`/favicon.ico`, `/apple-touch-icon.png`) | 7 days in browsers, 30 days at the edge |
 | Admin site | never cached |
+
+Pages, assets and data also carry `stale-if-error`, so the CDN keeps serving its copy while the
+origin restarts or is offline.
 
 Every response has an ETag (cheap 304s) and `Vary: Accept-Encoding`. With Cloudflare: proxy the
 DNS record (orange cloud), set SSL/TLS to **Full (strict)**, and add a Cache Rule for the hostname
 that makes requests **eligible for cache** with Edge TTL **using the origin's cache-control**.
-Cloudflare doesn't cache HTML or JSON without that rule. If your origin gets its certificate
+Cloudflare doesn't cache HTML or JSON without that rule. Also set Caching → Browser Cache TTL to
+**Respect Existing Headers**: the default (4 hours) overrides the short lifetimes above, so browsers
+would keep stale pages and live scores for hours. If your origin gets its certificate
 by HTTP challenge, keep `/.well-known/acme-challenge/` out of any "Always use HTTPS" redirect (or
 switch to a DNS challenge).
 
