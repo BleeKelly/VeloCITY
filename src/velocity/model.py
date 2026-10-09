@@ -22,6 +22,9 @@ from .outcomes import boom_score, havoc_score, play_score, play_weight
 UNITS = ("off", "def", "coach", "boom", "boom_def", "havoc", "havoc_off")
 OFF, DEF, COACH, BOOM, BOOM_DEF, HAVOC, HAVOC_OFF = range(len(UNITS))
 PLAY, COACHING, VBOOM, VHAVOC = 0, 1, 2, 3  # event kinds
+# Rating slots shared by many opponents (college: every non-FBS team is "FCS"); rated, but left out
+# of the tables, ranks and averages.
+POOLED = {"FCS"}
 ZONE_BINS = [0, 10, 20, 40, 60, 80, 100]    # yards from the end zone
 FG_BINS = [0, 29, 39, 49, 99]               # kick distance
 ENGINE_COLUMNS = ["season", "game_date", "game_id", "play_id", "kind", "att_team", "def_team",
@@ -338,10 +341,20 @@ def run_elo(events: Events, cfg: EloConfig, start: EloState | None = None,
                      regressed=regressed)
 
 
+def active_teams(events: Events) -> list[str]:
+    """Teams that played in the latest season or the one before (college programs come and go from
+    FBS), minus pooled slots like college's shared FCS rating."""
+    g = events.games
+    recent = g[g["season"] >= g["season"].max() - 1]
+    playing = set(recent["home_team"]) | set(recent["away_team"])
+    return [t for t in events.teams if t in playing and t not in POOLED]
+
+
 def team_table(events: Events, res: EloResult) -> pd.DataFrame:
     """Final ratings, plus each team's raw play win rates in the latest season for context."""
     r = res.ratings.reshape(-1, len(UNITS))
     t = pd.DataFrame({"team": events.teams, **{unit: r[:, i] for i, unit in enumerate(UNITS)}})
+    t = t[t["team"].isin(active_teams(events))].reset_index(drop=True)
     t["net"] = (t["off"] - t["off"].mean()) + (t["def"] - t["def"].mean())
     # V-City: offense = big plays created, defense = havoc created, net = all four units
     # (big plays and havoc created, minus what's allowed), each above average.

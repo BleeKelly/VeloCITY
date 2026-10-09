@@ -29,7 +29,7 @@ const KINDS = [
   ["off", "Never", ""],
 ];
 
-const st = { saved: null, draft: null, defaults: null, status: null, preview: null, savedPreview: null, test: { down: 1, ydstogo: 10, yards_gained: 4, turnover: false, punt: false }, score: null };
+const st = { saved: null, draft: null, defaults: null, league: { key: "nfl", decay: true }, status: null, preview: null, savedPreview: null, test: { down: 1, ydstogo: 10, yards_gained: 4, turnover: false, punt: false }, score: null };
 
 async function api(path, body) {
   const res = await fetch(path, body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {});
@@ -76,7 +76,7 @@ function thresholdEditor(down, which) {
 }
 
 function renderEditor() {
-  const r = st.draft.rules, m = st.draft.model;
+  const r = st.draft.rules, m = st.draft.model, d = st.defaults.model;
   const form = $("#editor");
   form.replaceChildren(
     h("section", { class: "card" },
@@ -142,16 +142,16 @@ function renderEditor() {
       h("h2", {}, "Model"),
       h("p", { class: "card-sub" }, "How far ratings move. Higher K reacts faster but chases noise; above ~3 it predicts worse than no ratings at all."),
       h("div", { class: "field-row" },
-        field("K per play", numberInput(m.k, (v) => { m.k = v; changed(false); }, { min: 0.01, max: 20 }), "Default 1.5"),
-        field("K per coaching event", numberInput(m.k_coach, (v) => { m.k_coach = v; changed(false); }, { min: 0, max: 20 }), "Default 1.0")),
+        field("K per play", numberInput(m.k, (v) => { m.k = v; changed(false); }, { min: 0.01, max: 20 }), `Default ${d.k}`),
+        field("K per coaching event", numberInput(m.k_coach, (v) => { m.k_coach = v; changed(false); }, { min: 0, max: 20 }), `Default ${d.k_coach}`)),
       h("div", { class: "field-row" },
         field("Off-season pull toward average, O/D (%)", numberInput(+(m.season_regression * 100).toFixed(1), (v) => { m.season_regression = v / 100; changed(false); }, { min: 0, max: 100 }), "Seasons without roster data, or with decay off"),
         field("Off-season pull, coaching (%)", numberInput(+(m.coach_regression * 100).toFixed(1), (v) => { m.coach_regression = v / 100; changed(false); }, { min: 0, max: 100 }))),
       h("div", { class: "field-row" },
-        field("K per V-City play", numberInput(m.k_vcity, (v) => { m.k_vcity = v; changed(false); }, { min: 0, max: 20 }), "Default 3"),
-        field("Off-season pull, V-City (%)", numberInput(+(m.vcity_regression * 100).toFixed(1), (v) => { m.vcity_regression = v / 100; changed(false); }, { min: 0, max: 100 }), "Default 50%")),
-      h("label", { class: "check" }, h("input", { type: "checkbox", checked: m.decay ? true : null, onchange: (e) => { m.decay = e.target.checked; changed(false); } }),
-        h("span", {}, "Team-specific off-season decay", h("span", { class: "field-hint" }, "Returning snaps, lineup age and head-coach changes set each team's pull (2014 on)."))),
+        field("K per V-City play", numberInput(m.k_vcity, (v) => { m.k_vcity = v; changed(false); }, { min: 0, max: 20 }), `Default ${d.k_vcity}`),
+        field("Off-season pull, V-City (%)", numberInput(+(m.vcity_regression * 100).toFixed(1), (v) => { m.vcity_regression = v / 100; changed(false); }, { min: 0, max: 100 }), `Default ${Math.round(d.vcity_regression * 100)}%`)),
+      st.league.decay ? h("label", { class: "check" }, h("input", { type: "checkbox", checked: m.decay ? true : null, onchange: (e) => { m.decay = e.target.checked; changed(false); } }),
+        h("span", {}, "Team-specific off-season decay", h("span", { class: "field-hint" }, "Returning snaps, lineup age and head-coach changes set each team's pull (2014 on)."))) : null,
       h("div", { class: "field-row" },
         field("Garbage time: offense win chance below (%)", numberInput(+(m.garbage_wp[0] * 100).toFixed(1), (v) => { m.garbage_wp[0] = v / 100; changed(false); }, { min: 0, max: 100 })),
         field("…or above (%)", numberInput(+(m.garbage_wp[1] * 100).toFixed(1), (v) => { m.garbage_wp[1] = v / 100; changed(false); }, { min: 0, max: 100 })))),
@@ -269,6 +269,8 @@ async function save() {
 async function init() {
   const out = await api("/api/settings");
   st.saved = clone(out.settings); st.draft = clone(out.settings); st.defaults = out.defaults; st.status = out.status;
+  st.league = out.league || { key: "nfl", name: "NFL", decay: true };
+  if (st.league.key !== "nfl") document.title = `VeloCITY ${st.league.name} admin`;
   if (out.public_port) {
     const link = $("#site-link");
     link.href = `${location.protocol}//${location.hostname}:${out.public_port}/`;

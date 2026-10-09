@@ -10,6 +10,7 @@ from . import data
 from . import settings as settings_mod
 from .config import EloConfig, PlayConfig
 from .evaluate import summarize
+from .league import LEAGUE
 from .model import prepare, run_elo
 from .pipeline import build, eval_start, ratings_table, write_outputs
 
@@ -74,7 +75,7 @@ def cmd_download(args) -> None:
 
 def cmd_run(args) -> None:
     pbp = data.load_seasons(args.seasons, refresh=args.refresh)
-    if args.seasons[-1] == data.current_season():
+    if args.seasons[-1] == data.current_season() and LEAGUE.key == "nfl":
         from . import live
         try:
             fixed = live.fix_stale_coaches(pbp, args.seasons[-1], live.head_coaches(args.seasons[-1], live.team_meta()))
@@ -173,7 +174,8 @@ def cmd_serve(args) -> None:
 
 def main() -> None:
     defaults = EloConfig()
-    parser = argparse.ArgumentParser(prog="velocity", description="VeloCITY: play-by-play Elo for NFL offenses, defenses and coaching staffs")
+    parser = argparse.ArgumentParser(prog="velocity", description="VeloCITY: play-by-play Elo for NFL and college "
+                                     "offenses, defenses and coaching staffs (VELOCITY_LEAGUE=nfl or ncaa)")
     sub = parser.add_subparsers(dest="command", required=True)
 
     common = argparse.ArgumentParser(add_help=False)

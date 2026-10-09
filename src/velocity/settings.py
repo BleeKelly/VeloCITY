@@ -9,10 +9,15 @@ import pandas as pd
 from . import data
 from .coaching import coach_events
 from .config import GARBAGE_TIME_WP, EloConfig, PlayConfig
+from .league import LEAGUE
 from .outcomes import play_score
 from .rules import DEFAULT_RULES, Rules
 
-DEFAULT_MODEL = EloConfig()
+# Tuned per league by next-event log loss (see `velocity tune`); same play rules for both.
+LEAGUE_MODELS = {
+    "ncaa": EloConfig(k=1.25, season_regression=0.3, k_coach=3.0, k_vcity=5.0, vcity_regression=0.3),
+}
+DEFAULT_MODEL = LEAGUE_MODELS.get(LEAGUE.key, EloConfig())
 
 
 @dataclass(frozen=True)
@@ -24,7 +29,7 @@ class Settings:
     coach_regression: float = DEFAULT_MODEL.coach_regression
     k_vcity: float = DEFAULT_MODEL.k_vcity
     vcity_regression: float = DEFAULT_MODEL.vcity_regression
-    decay: bool = True
+    decay: bool = LEAGUE.decay
     garbage_wp: tuple[float, float] = GARBAGE_TIME_WP
 
     def play_config(self, base: PlayConfig | None = None) -> PlayConfig:
@@ -36,7 +41,7 @@ class Settings:
                          k_vcity=self.k_vcity, vcity_regression=self.vcity_regression)
 
     def decay_params(self):
-        if not self.decay:
+        if not self.decay or not LEAGUE.decay:  # roster decay needs nflverse snap counts
             return None
         from .decay import FITTED
         return FITTED
@@ -78,7 +83,7 @@ class Settings:
             lo, hi = GARBAGE_TIME_WP
         if errors:
             raise ValueError("; ".join(errors))
-        return cls(rules=rules, decay=bool(m.get("decay", True)), garbage_wp=(lo, hi), **nums)
+        return cls(rules=rules, decay=bool(m.get("decay", LEAGUE.decay)), garbage_wp=(lo, hi), **nums)
 
 
 def load(path: Path = data.SETTINGS_FILE) -> Settings:

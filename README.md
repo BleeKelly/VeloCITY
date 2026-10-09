@@ -2,11 +2,11 @@
 
 # VeloCITY
 
-Play-by-play **Elo** for the NFL, plus **V-City**, a second rating for the boom-or-bust plays Elo
-can't see. Every run, pass, punt and field goal is a one-play game between an offense and a
-defense; every penalty, two-point try and early timeout is a game between two coaching staffs.
-Ratings go back to 1999, update live during games, and come with a web app that plots every team
-on Elo × V-City.
+Play-by-play **Elo** for the NFL and college football, plus **V-City**, a second rating for the
+boom-or-bust plays Elo can't see. Every run, pass, punt and field goal is a one-play game between an
+offense and a defense; every penalty, two-point try and early timeout is a game between two coaching
+staffs. Ratings go back to 1999 (NFL) and 2004 (FBS), update live during games, and come with a web
+app that plots every team on Elo × V-City.
 
 ## The rules
 
@@ -106,6 +106,30 @@ uv run velocity serve             # site on http://localhost:8097, rules admin o
 Common flags: `--seasons 2016-2026`, `--settings FILE`, `--k`, `--regression`, `--no-decay`,
 `--no-postseason`, `--no-situational`, `--no-home-field`, `--wp-range LO HI`.
 
+### College football
+
+The same code rates college football when `VELOCITY_LEAGUE=ncaa`: every FBS team since 2004, with the
+same play rules. One running instance rates one league, each with its own data folder, settings and
+ports.
+
+```bash
+VELOCITY_LEAGUE=ncaa uv run velocity run      # downloads ~1.5 GB of college play-by-play into data/cfb/raw
+VELOCITY_LEAGUE=ncaa uv run velocity serve --port 8099 --admin-port 8100
+```
+
+- **Teams.** FBS programs are rated by school name. Every opponent outside FBS shares one rating,
+  `FCS`, which is rated like a team but left out of the table, ranks and averages. Games between two
+  non-FBS teams are skipped. Programs that left FBS keep their history but drop off the board.
+- **Model settings.** Tuned on college data by the same next-play log loss: K 1.25 with 30%
+  off-season regression, V-City K 5 (30%), coaching K 3. The play rules are the NFL's. There's no
+  roster-based decay (it needs NFL snap counts), so every team gets the same off-season pull.
+- **Champions.** The national championship game (BCS or CFP) from the schedule notes, otherwise a
+  finished season's last postseason game. Bowls and playoff games share one "Postseason" week.
+- **Web app.** The board, Seasons and Elo × V-City pages get a conference filter (each school's
+  current conference). Set `VELOCITY_SIBLINGS="NFL=https://…,NCAA=https://…"` on both sites to show a
+  switcher between them.
+- **Live.** ESPN's FBS scoreboard and game feeds, polled every 90 seconds while games are on.
+
 ### Configuration
 
 | Variable | Default | What it does |
@@ -114,8 +138,13 @@ Common flags: `--seasons 2016-2026`, `--settings FILE`, `--k`, `--regression`, `
 | `VELOCITY_ADMIN_PORT` | `8098` | Rules admin port |
 | `VELOCITY_ADMIN_PASSWORD` | *(none)* | Require this password for the rules admin |
 | `VELOCITY_STORE` | `/data` in the image | Folder for `raw/` (parquet cache), `output/` (CSVs) and `settings.json` |
-| `COMPOSE_PROFILES` | *(none)* | `auto-update` to run the updater that pulls new images |
+| `VELOCITY_LEAGUE` | `nfl` | `ncaa` for college football (set for you on the compose `velocity-ncaa` service) |
+| `VELOCITY_SIBLINGS` | *(none)* | `NFL=https://…,NCAA=https://…`: links between the two sites |
+| `COMPOSE_PROFILES` | *(none)* | Comma-separated: `auto-update` runs the updater; `ncaa` runs the college site |
+| `VELOCITY_NCAA_PORT` / `VELOCITY_NCAA_ADMIN_PORT` | `8099` / `8100` | College site and admin ports |
+| `VELOCITY_NCAA_DATA` | `./store-ncaa` | Host folder mounted at the college site's `/data` |
 | `VELOCITY_UPDATE_INTERVAL` | `900` | Seconds between the updater's checks |
+| `VELOCITY_UPDATE_SERVICES` | `velocity` | Services the updater pulls and restarts (`velocity velocity-ncaa` for both) |
 
 With Docker Compose these go in the `.env` next to `docker-compose.yml`, along with
 `VELOCITY_IMAGE`, `VELOCITY_DATA` (host folder mounted at `/data`) and `VELOCITY_USER` (`uid:gid`).
@@ -214,6 +243,10 @@ switch to a DNS challenge).
 - ESPN's public scoreboard/game feeds for live plays (provisional; matched nflverse on 99.9% of
   plays across 2026 week 4), team colors and logos, and current head coaches (nflverse's coach
   names can lag a coaching change).
+- College: [sportsdataverse](https://github.com/sportsdataverse/sportsdataverse-data) (cfbfastR)
+  play-by-play, schedules and team info. 2014 on comes from its releases; 2004–2013 from the
+  [cfbfastR-data](https://github.com/sportsdataverse/cfbfastR-data) repo, whose older files use
+  ESPN's raw column names (`cfb.py` handles both).
 
 ## Deploying with Docker
 
@@ -238,19 +271,25 @@ VELOCITY_ADMIN_PORT=8098         # optional: rules admin port
 VELOCITY_ADMIN_PASSWORD=...      # optional: password for the rules admin
 VELOCITY_AUTO_UPDATE=true        # optional: poll the registry and pull new images (default on)
 VELOCITY_UPDATE_INTERVAL=900     # optional: seconds between checks
+VELOCITY_NCAA=true               # optional: run the college site too (data in data-ncaa/)
+VELOCITY_NCAA_PORT=8099          # optional: college site port
+VELOCITY_NCAA_ADMIN_PORT=8100    # optional: college rules admin port
+VELOCITY_SIBLINGS="NFL=https://nfl.example.com,NCAA=https://cfb.example.com"  # optional: league switcher
 ```
 
 Then `deploy/deploy.sh` pulls and restarts, `--build` builds on the server instead, and
-`--seed-data` copies your local parquet cache so the server skips the ~550 MB download.
+`--seed-data` copies your local parquet caches so the server skips the ~550 MB NFL (and ~1.5 GB
+college) download.
 
 ### Auto-update
 
 With `COMPOSE_PROFILES=auto-update` in the `.env` (the deploy script sets it unless you use
 `--build`), compose also runs a small `velocity-updater` container. Every
 `VELOCITY_UPDATE_INTERVAL` seconds (15 minutes by default) it pulls the `velocity` image and, if
-a new one was published, recreates just that container. Push to `main` → the Release workflow
-publishes the image → the server picks it up within the interval. It mounts the Docker socket
-but only ever pulls and restarts the `velocity` service. Its log
+a new one was published, recreates just that container (and `velocity-ncaa`, when the deploy
+script runs the college site). Push to `main` → the Release workflow publishes the image → the
+server picks it up within the interval. It mounts the Docker socket but only ever pulls and
+restarts the services in `VELOCITY_UPDATE_SERVICES`. Its log
 (`docker logs velocity-updater`) notes each update.
 
 For dashboard widgets, `/api/widget` returns the No. 1 team, the top five and the number of

@@ -231,11 +231,11 @@ def team_meta() -> dict[str, dict]:
     return out
 
 
-def head_coaches(season: int, meta: dict[str, dict]) -> dict[str, str]:
+def head_coaches(season: int, meta: dict[str, dict], url: str = COACHES) -> dict[str, str]:
     """Current head coach per team from ESPN; nflverse's coach names can lag a coaching change."""
     def one(item):
         abbr, info = item
-        listing = fetch_json(COACHES.format(season=season, id=info["id"]))
+        listing = fetch_json(url.format(season=season, id=info["id"]))
         if not listing.get("items"):
             return abbr, None
         coach = fetch_json(listing["items"][0]["$ref"].replace("http://", "https://"))

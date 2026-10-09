@@ -1,4 +1,4 @@
-"""Download and cache nflverse play-by-play data."""
+"""Download and cache nflverse play-by-play data (college football lives in cfb.py)."""
 
 import os
 import time
@@ -8,17 +8,21 @@ from pathlib import Path
 
 import pandas as pd
 
+from .league import LEAGUE
+
 URL = "https://github.com/nflverse/nflverse-data/releases/download/{release}/{name}_{season}.parquet"
-# VELOCITY_STORE (the container's /data volume) holds raw/ and output/; otherwise use the repo.
+# VELOCITY_STORE (the container's /data volume) holds raw/ and output/; otherwise use the repo
+# (data/ and output/ for the NFL, data/cfb/ and output/cfb/ for college).
 _STORE = os.environ.get("VELOCITY_STORE")
 _REPO = Path(__file__).resolve().parents[2]
-DATA_DIR = Path(_STORE) / "raw" if _STORE else _REPO / "data" / "raw"
-OUTPUT_DIR = Path(_STORE) / "output" if _STORE else _REPO / "output"
-SETTINGS_FILE = Path(_STORE) / "settings.json" if _STORE else _REPO / "data" / "settings.json"
+_LOCAL = _REPO / "data" / ("cfb" if LEAGUE.key == "ncaa" else "")
+DATA_DIR = Path(_STORE) / "raw" if _STORE else _LOCAL / "raw"
+OUTPUT_DIR = Path(_STORE) / "output" if _STORE else _REPO / "output" / ("cfb" if LEAGUE.key == "ncaa" else "")
+SETTINGS_FILE = Path(_STORE) / "settings.json" if _STORE else _LOCAL / "settings.json"
 # Optional local overlay: your own HTML, scripts and files added to the public site (see README).
 OVERLAY_DIR = Path(os.environ.get("VELOCITY_OVERLAY")
                    or (Path(_STORE) / "overlay" if _STORE else _REPO / "local" / "overlay"))
-FIRST_SEASON = 1999
+FIRST_SEASON = LEAGUE.first_season
 
 # The in-progress season's file is rebuilt nightly; re-download it once it's older than this.
 CURRENT_SEASON_MAX_AGE_HOURS = 12
@@ -43,7 +47,7 @@ TEAM_COLUMNS = ["home_team", "away_team", "posteam", "defteam", "penalty_team", 
 
 def current_season(today: date | None = None) -> int:
     today = today or date.today()
-    return today.year if today.month >= 9 else today.year - 1
+    return today.year if today.month >= LEAGUE.season_start_month else today.year - 1
 
 
 def download(season: int | None, refresh: bool = False, release: str = "pbp", name: str = "play_by_play") -> Path:
@@ -71,6 +75,17 @@ def download(season: int | None, refresh: bool = False, release: str = "pbp", na
     return path
 
 
+def refresh(season: int) -> None:
+    """Re-download the in-progress season's files."""
+    if LEAGUE.key == "ncaa":
+        from . import cfb
+
+        cfb.schedule_file(season, refresh=True)
+        cfb.pbp_file(season, refresh=True)
+    else:
+        download(season, refresh=True)
+
+
 def standardize_teams(df: pd.DataFrame) -> pd.DataFrame:
     for col in TEAM_COLUMNS:
         if col in df:
@@ -79,5 +94,9 @@ def standardize_teams(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def load_seasons(seasons: list[int], refresh: bool = False) -> pd.DataFrame:
+    if LEAGUE.key == "ncaa":
+        from . import cfb
+
+        return cfb.load_seasons(seasons, refresh)
     frames = [pd.read_parquet(download(s, refresh), columns=COLUMNS) for s in seasons]
     return standardize_teams(pd.concat(frames, ignore_index=True))

@@ -3,10 +3,10 @@
 Two ports: the public site (ratings, teams, games) and an admin site for editing the scoring
 rules and model settings. Saving settings rescores every season in the background.
 
-History is rebuilt from nflverse at startup and at REBUILD_HOURS each day (Eastern), once the
-overnight nflverse update has landed. While games are on, ESPN's live feed is polled and the
+History is rebuilt at startup and at REBUILD_HOURS each day (Eastern) from nflverse, or for college
+from sportsdataverse (see league.py). While games are on, ESPN's live feed is polled and the
 history ratings are carried forward through the live plays; those are provisional until the
-game shows up in nflverse.
+game shows up in the history files.
 """
 
 import base64
@@ -15,6 +15,7 @@ import hashlib
 import hmac
 import json
 import math
+import os
 import re
 import threading
 import time
@@ -25,7 +26,7 @@ from functools import lru_cache
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 import numpy as np
 import pandas as pd
@@ -33,7 +34,8 @@ import pandas as pd
 from . import data, live
 from .coaching import __doc__ as COACHING_DOC
 from .config import EloConfig, PlayConfig
-from .model import DEF, OFF, UNITS, EloState, Events, game_history, prepare, run_elo
+from .league import LEAGUE
+from .model import COACH, DEF, OFF, POOLED, UNITS, EloState, Events, game_history, prepare, run_elo
 from .pipeline import SEASON_ONLY, build, game_predictions, home_edge, ratings_table, win_prob, write_outputs
 from .rules import Rules
 from .settings import Settings, preview, score_plays
@@ -41,7 +43,7 @@ from .settings import save as save_settings
 
 WEB = resources.files("velocity") / "web"
 EVENTS_DIR = data.OUTPUT_DIR / "events"
-LIVE_POLL_SECONDS = 45
+LIVE_POLL_SECONDS = LEAGUE.live_poll_seconds
 IDLE_POLL_SECONDS = 600
 EVENT_COLUMNS = ["game_id", "play_id", "kind", "event", "att_team", "def_team", "play_type", "qtr", "time",
                  "down", "ydstogo", "yards_gained", "y", "desc", "total_home_score", "total_away_score",
@@ -58,6 +60,11 @@ CACHE_PAGE = "public, max-age=0, s-maxage=300, stale-while-revalidate=600"  # th
 CACHE_LIVE = "public, max-age=15, s-maxage=30, stale-while-revalidate=30"   # summary, live data
 CACHE_MISS = "public, max-age=0, s-maxage=60"                 # 404s and bad requests
 NO_STORE = "no-store"                                         # admin, and "still building"
+
+# Links to the other leagues' sites, e.g. VELOCITY_SIBLINGS="NFL=https://nfl.example.com,NCAA=https://cfb.example.com"
+SIBLINGS = [{"label": k.strip(), "url": v.strip()} for k, _, v in
+            (pair.partition("=") for pair in os.environ.get("VELOCITY_SIBLINGS", "").split(","))
+            if k.strip() and v.strip().startswith(("http://", "https://"))]
 
 # Browsers and iOS ask for these at the site root.
 ROOT_FILES = {"favicon.ico": "favicon.ico", "apple-touch-icon.png": "apple-touch-icon.png",
@@ -150,14 +157,25 @@ def records(df: pd.DataFrame, digits: int = 2) -> list[dict]:
     return out.astype(object).where(out.notna(), None).to_dict("records")
 
 
-def super_bowls(games: pd.DataFrame) -> dict[int, dict]:
-    """{season: {team, runner_up, score, game_id}} from each finished season's last playoff game."""
+def feed():
+    """ESPN teams, coaches and live games for this league."""
+    if LEAGUE.key == "ncaa":
+        from . import cfb
+
+        return cfb
+    return live
+
+
+def super_bowls(games: pd.DataFrame, title_ids: frozenset[str] = frozenset()) -> dict[int, dict]:
+    """{season: {team, runner_up, score, game_id}} from each season's title game: a known title game
+    (college), the Super Bowl week, or else the last postseason game of a finished season."""
     post = games[games["season_type"] == "POST"].sort_values("game_date")
     out = {}
     for season, g in post.groupby("season"):
-        last = g.iloc[-1]
+        titled = g[g["game_id"].isin(title_ids)]
+        last = titled.iloc[-1] if len(titled) else g.iloc[-1]
         sb_week = 22 if season >= 2021 else 21
-        if season < data.current_season() or last["week"] == sb_week:
+        if len(titled) or season < data.current_season() or (LEAGUE.key == "nfl" and last["week"] == sb_week):
             home_won = last["home_score"] > last["away_score"]
             win, lose = ("home", "away") if home_won else ("away", "home")
             out[int(season)] = {"team": last[f"{win}_team"], "runner_up": last[f"{lose}_team"],
@@ -236,14 +254,14 @@ class State:
             seasons = list(range(data.FIRST_SEASON, data.current_season() + 1))
             if refresh:
                 try:
-                    data.download(seasons[-1], refresh=True)
+                    data.refresh(seasons[-1])
                 except OSError as e:  # offline: rate what's cached
                     print(f"could not refresh {seasons[-1]}: {e}")
             pbp = data.load_seasons(seasons)
             try:
-                self.teams_meta = live.team_meta()
-                self.coaches = live.head_coaches(seasons[-1], self.teams_meta)
-                fixed = live.fix_stale_coaches(pbp, seasons[-1], self.coaches)
+                self.teams_meta = feed().team_meta()
+                self.coaches = feed().head_coaches(seasons[-1], self.teams_meta) if LEAGUE.coaches else {}
+                fixed = feed().fix_stale_coaches(pbp, seasons[-1], self.coaches)
                 if fixed:
                     print(f"head coaches updated from ESPN: {', '.join(fixed)}")
             except (OSError, KeyError, ValueError) as e:
@@ -269,7 +287,12 @@ class State:
                                       r.offseason, r.elo_cfg)
             del runs, events
 
-            champions = super_bowls(snap["all"].games)
+            title_ids = frozenset()
+            if LEAGUE.key == "ncaa":
+                from .cfb import title_games
+
+                title_ids = title_games(tuple(seasons))
+            champions = super_bowls(snap["all"].games, title_ids)
             with self.lock:
                 self.snap = snap
                 self.champions = champions
@@ -288,7 +311,7 @@ class State:
         if not self.live_enabled or not self.snap:
             return
         try:
-            board = live.scoreboard()
+            board = feed().scoreboard()
         except OSError as e:
             print(f"scoreboard unavailable: {e}")
             return
@@ -303,7 +326,7 @@ class State:
                 frames.append(cached)
                 continue
             try:
-                rows = live.summary_rows(live.fetch_json(live.SUMMARY.format(id=g["espn_id"])), coaches)
+                rows = feed().summary_rows(live.fetch_json(feed().SUMMARY.format(id=g["espn_id"])), coaches)
             except (OSError, KeyError, ValueError) as e:
                 print(f"live feed for {g['game_id']} unavailable: {e}")
                 continue
@@ -357,6 +380,7 @@ class State:
         table = ratings_table(self.snap, scope)
         now = pd.DataFrame(self.ratings_now("all" + scope), columns=list(UNITS))[["off", "def", "coach"]]
         now["team"] = snap.events.teams
+        now = now[now["team"].isin(table["team"])]
         now["net"] = (now["off"] - now["off"].mean()) + (now["def"] - now["def"].mean())
         table = table.merge(now.add_prefix("live_").rename(columns={"live_team": "team"}), on="team")
         table["live_change"] = table["live_net"] - table["net"]
@@ -381,6 +405,8 @@ class State:
             "ratings_season": self.board(SEASON_ONLY),
             "scoreboard": self.week_games(),
             "first_season": data.FIRST_SEASON,
+            "league": LEAGUE.public(),
+            "siblings": SIBLINGS,
             "decay": self.decay_params is not None,
             "settings": self.settings.to_dict(),
             "champions": self.champions,
@@ -412,6 +438,13 @@ class State:
             out.append(row)
         return json.loads(json.dumps(out, default=float))
 
+    def team_key(self, name: str) -> str:
+        """A team's key from a URL: NFL abbreviations in any case, college school names as written."""
+        teams = self.snap["all"].events.teams
+        if name in teams:
+            return name
+        return next((t for t in teams if t.lower() == name.lower()), name)
+
     def team(self, abbr: str, variant: str) -> dict | None:
         snap = self.snap[variant]
         if abbr not in snap.events.teams:
@@ -426,8 +459,9 @@ class State:
         # End-of-season ratings and ranks for every team, then this team's rows.
         allh = snap.history.assign(net=snap.history["off_post"] + snap.history["def_post"] - 3000)
         ends = allh.groupby(["season", "team"]).last().reset_index()
+        ranked = ~ends["team"].isin(POOLED)
         for col in ("net", "off_post", "def_post", "coach_post"):
-            ends[f"{col}_rank"] = ends.groupby("season")[col].rank(ascending=False, method="min")
+            ends[f"{col}_rank"] = ends[ranked].groupby("season")[col].rank(ascending=False, method="min")
         mine = ends[ends["team"] == abbr].copy()
         wins = allh.assign(w=allh["points_for"] > allh["points_against"],
                            l=allh["points_for"] < allh["points_against"],
@@ -436,6 +470,15 @@ class State:
         mine = mine.merge(record, on="season", how="left")
 
         row = snap.table[snap.table["team"] == abbr]
+        if len(row):
+            current = records(row.assign(head_coach=self.coaches.get(abbr, row["head_coach"].iloc[0])), 1)[0]
+        else:  # a pooled slot (FCS) or a program no longer in the table: ratings, no ranks
+            r = self.ratings_now(variant)[list(snap.events.teams).index(abbr)]
+            avg = snap.table[["off", "def", "coach"]].mean()
+            current = {"team": abbr, "inactive": True, "head_coach": None, "off": round(float(r[OFF]), 1),
+                       "def": round(float(r[DEF]), 1), "coach": round(float(r[COACH]), 1),
+                       "net": round(float(r[OFF] - avg["off"] + r[DEF] - avg["def"]), 1)}
+            current["spread"] = round(current["net"] * snap.metrics["pts_per_100_elo"] / 100, 1)
         off = snap.offseason if snap.offseason is not None else pd.DataFrame()
         off = off[off["team"] == abbr] if len(off) else off
         return {
@@ -443,7 +486,8 @@ class State:
             "offseason": records(off.sort_values("season").tail(12), 3) if len(off) else [],
             "team": abbr,
             "meta": self.teams_meta.get(abbr, {}),
-            "current": records(row.assign(head_coach=self.coaches.get(abbr, row["head_coach"].iloc[0])), 1)[0],
+            "current": current,
+            "rated_teams": len(snap.table),
             "history": records(hist[["season", "season_type", "week", "game_date", "game_id", "opponent", "home",
                                      "points_for", "points_against", "off_post", "def_post", "coach_post", "net",
                                      "net_pre"]
@@ -494,7 +538,7 @@ class State:
                            v_net=hist["boom_post"] + hist["boom_def_post"] + hist["havoc_post"]
                            + hist["havoc_off_post"] - 6000)
         teams = []
-        for team, g in hist.groupby("team"):
+        for team, g in hist[~hist["team"].isin(POOLED)].groupby("team"):
             last = g.iloc[-1]
             teams.append({
                 "team": team, "net": round(last["net"], 1), "off": round(last["off"], 1),
@@ -602,7 +646,7 @@ def make_handler(state: State):
                     if parts[1:] == ["widget"]:
                         return self.json(state.widget(), cache=CACHE_LIVE)
                     if len(parts) == 3 and parts[1] == "team":
-                        body = state.team(parts[2].upper(), variant)
+                        body = state.team(state.team_key(unquote(parts[2])), variant)
                         return self.json(body, cache=data_cache) if body else self.json({"error": "unknown team"}, 404, CACHE_MISS)
                     if parts[1:] == ["games"]:
                         season = int(q.get("season", state.snap["all"].games["season"].max()))
@@ -655,7 +699,7 @@ def make_admin_handler(state: State, password: str | None):
                 return
             if parts == ["api", "settings"]:
                 return self.json({"settings": state.settings.to_dict(), "defaults": Settings().to_dict(),
-                                  "status": state.status, "public_port": state.public_port})
+                                  "status": state.status, "public_port": state.public_port, "league": LEAGUE.public()})
             if parts == ["api", "status"]:
                 return self.json(state.status)
             return self.json({"error": "not found"}, 404)

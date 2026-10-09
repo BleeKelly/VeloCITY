@@ -6,6 +6,12 @@
       "runtimeExecutable": "uv",
       "runtimeArgs": ["run", "velocity", "serve", "--port", "8097"],
       "port": 8097
+    },
+    {
+      "name": "velocity-ncaa",
+      "runtimeExecutable": "env",
+      "runtimeArgs": ["VELOCITY_LEAGUE=ncaa", "uv", "run", "velocity", "serve", "--port", "8099", "--admin-port", "8100"],
+      "port": 8099
     }
   ]
 }

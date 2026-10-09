@@ -4,6 +4,7 @@
 data
 output
 store
+store-ncaa
 tests
 deploy
 .claude

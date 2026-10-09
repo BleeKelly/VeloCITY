@@ -12,6 +12,7 @@ services:
       - VELOCITY_PORT=${VELOCITY_PORT:-8097}              # public site
       - VELOCITY_ADMIN_PORT=${VELOCITY_ADMIN_PORT:-8098}  # rules admin; keep it off the internet
       - VELOCITY_ADMIN_PASSWORD=${VELOCITY_ADMIN_PASSWORD:-}  # optional: require a password for admin
+      - VELOCITY_SIBLINGS=${VELOCITY_SIBLINGS:-}  # optional: "NFL=https://...,NCAA=https://..." league switcher
     ports:
       - "${VELOCITY_PORT:-8097}:${VELOCITY_PORT:-8097}"
       - "${VELOCITY_ADMIN_PORT:-8098}:${VELOCITY_ADMIN_PORT:-8098}"
@@ -24,9 +25,34 @@ services:
       net.unraid.docker.icon: "https://raw.githubusercontent.com/BleeKelly/VeloCITY/main/src/velocity/web/icon-512.png"
       net.unraid.docker.webui: "http://[IP]:[PORT:8097]/"
 
-  # Optional: checks the registry and restarts `velocity` when a new image is published.
-  # Turn on with COMPOSE_PROFILES=auto-update. Needs the Docker socket, but only ever touches
-  # the velocity service. The app folder is mounted at the same path so compose sees the same config.
+  # Optional: the college football site (FBS since 2004), same image with VELOCITY_LEAGUE=ncaa,
+  # its own data folder and ports. Turn on with COMPOSE_PROFILES=ncaa (comma-separate profiles).
+  velocity-ncaa:
+    image: ${VELOCITY_IMAGE:-velocity:latest}
+    container_name: velocity-ncaa
+    restart: unless-stopped
+    profiles: ["ncaa"]
+    user: "${VELOCITY_USER:-1000:1000}"
+    environment:
+      - TZ=America/New_York
+      - VELOCITY_LEAGUE=ncaa
+      - VELOCITY_PORT=${VELOCITY_NCAA_PORT:-8099}
+      - VELOCITY_ADMIN_PORT=${VELOCITY_NCAA_ADMIN_PORT:-8100}
+      - VELOCITY_ADMIN_PASSWORD=${VELOCITY_ADMIN_PASSWORD:-}
+      - VELOCITY_SIBLINGS=${VELOCITY_SIBLINGS:-}
+    ports:
+      - "${VELOCITY_NCAA_PORT:-8099}:${VELOCITY_NCAA_PORT:-8099}"
+      - "${VELOCITY_NCAA_ADMIN_PORT:-8100}:${VELOCITY_NCAA_ADMIN_PORT:-8100}"
+    volumes:
+      - ${VELOCITY_NCAA_DATA:-./store-ncaa}:/data
+    command: ["velocity", "serve", "--host", "0.0.0.0", "--rebuild-hours", "6", "12"]
+    labels:
+      net.unraid.docker.icon: "https://raw.githubusercontent.com/BleeKelly/VeloCITY/main/src/velocity/web/icon-512.png"
+      net.unraid.docker.webui: "http://[IP]:[PORT:8099]/"
+
+  # Optional: checks the registry and restarts the VeloCITY services when a new image is published.
+  # Turn on with COMPOSE_PROFILES=auto-update. Needs the Docker socket, but only ever touches the
+  # services in VELOCITY_UPDATE_SERVICES. The app folder is mounted at the same path so compose sees the same config.
   updater:
     image: docker:29.5.1-cli
     container_name: velocity-updater
@@ -35,6 +61,7 @@ services:
     working_dir: ${VELOCITY_APP_DIR:-/app}
     environment:
       - INTERVAL=${VELOCITY_UPDATE_INTERVAL:-900}
+      - SERVICES=${VELOCITY_UPDATE_SERVICES:-velocity}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${VELOCITY_APP_DIR:-.}:${VELOCITY_APP_DIR:-/app}:ro

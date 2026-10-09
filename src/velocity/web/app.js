@@ -38,23 +38,32 @@ const signed = (x, d = 1) => {
 const pct = (x) => (x == null ? "–" : Math.round(x * 100) + "%");
 const ordinal = (n) => n + (["th", "st", "nd", "rd"][((n % 100) - 20) % 10] || ["th", "st", "nd", "rd"][n % 100] || "th");
 const DOWN = ["", "1st", "2nd", "3rd", "4th"];
-// Regular seasons ran 17 weeks through 2020 and 18 since; playoff rounds follow.
-const regWeeks = (season) => (season >= 2021 ? 18 : 17);
+// The summary says which league this site rates; one codebase serves the NFL and college sites.
+const NFL = { key: "nfl", name: "NFL", title_game: "Super Bowl", postseason_week: 0, first_season: 1999 };
+const league = () => (store.summary && store.summary.league) || NFL;
+const college = () => league().key === "ncaa";
+const site = () => (college() ? "VeloCITY NCAA" : "VeloCITY");
+const titleGame = () => league().title_game;                          // the game: "Super Bowl", "National Championship"
+const titlePrize = () => (college() ? "national title" : "Super Bowl"); // what a team wins
+// NFL regular seasons ran 17 weeks through 2020 and 18 since; playoff rounds follow. College bowls and
+// playoff games share one postseason week.
+const regWeeks = (season) => (college() ? league().postseason_week - 1 : season >= 2021 ? 18 : 17);
 const isPlayoff = (season, week) => week > regWeeks(season);
-const weekName = (season, week) => isPlayoff(season, week)
-  ? (["Wild Card", "Divisional", "Conference", "Super Bowl"][week - regWeeks(season) - 1] || "Playoffs")
-  : `Week ${week}`;
+const weekName = (season, week) => !isPlayoff(season, week) ? `Week ${week}`
+  : college() ? "Postseason"
+  : (["Wild Card", "Divisional", "Conference", "Super Bowl"][week - regWeeks(season) - 1] || "Playoffs");
 const champion = (season) => (store.summary && store.summary.champions ? store.summary.champions[season] : null);
 const wonTitle = (team, season) => { const c = champion(season); return !!c && c.team === team; };
 const lostTitle = (team, season) => { const c = champion(season); return !!c && c.runner_up === team; };
-const isSuperBowl = (g) => { const c = champion(g.season); return !!c && c.game_id === g.game_id; };
-const trophy = (title = "Won the Super Bowl") => h("span", { class: "trophy", title, "aria-label": title, role: "img" }, "🏆");
-const silver = (title = "Super Bowl runner-up") => h("span", { class: "trophy", title, "aria-label": title, role: "img" }, "🥈");
+const isTitleGame = (g) => { const c = champion(g.season); return !!c && c.game_id === g.game_id; };
+const trophy = (title = `Won the ${titlePrize()}`) => h("span", { class: "trophy", title, "aria-label": title, role: "img" }, "🏆");
+const silver = (title = `${titlePrize()} runner-up`) => h("span", { class: "trophy", title, "aria-label": title, role: "img" }, "🥈");
+const rk = (n) => (n == null ? "unranked" : ordinal(n));
 const cleanDesc = (d) => (d || "").replace(/^\(\s*:?\d*:?\d+\)\s*/, "");
 
 /* ---------- data ---------- */
 
-const store = { summary: null, variant: "all", scope: "history", timers: [] };
+const store = { summary: null, variant: "all", scope: "history", conf: "", timers: [] };
 // Rating set key on the server: all/ng (garbage time) + "_season" for this-season-only ratings.
 const setKey = () => store.variant + (store.scope === "season" ? "_season" : "");
 const toggles = (rerender) => [
@@ -77,6 +86,21 @@ function meta(abbr) {
   return (store.summary && store.summary.teams[abbr]) || { name: abbr, short: abbr, color: "#777777", alt: "#999999" };
 }
 
+// NFL teams are keyed by abbreviation; college teams by school name ("Texas A&M", "Miami (OH)").
+const teamPath = (team) => `/team/${encodeURIComponent(team)}`;
+const code = (team) => meta(team).abbr || team;                       // short label for tight spots
+const tname = (team) => (college() ? meta(team).short || team : team); // label in tables and text
+
+// College only: narrow the board, seasons and charts to one conference (current membership).
+const inConf = (team) => !store.conf || meta(team).conference === store.conf;
+function confFilter(rerender) {
+  if (!college()) return null;
+  const confs = [...new Set(Object.values(store.summary.teams).map((m) => m.conference).filter((c) => c && c !== "FCS"))].sort();
+  return h("select", { class: "select", "aria-label": "Conference", onchange: (e) => { store.conf = e.target.value; rerender(); } },
+    h("option", { value: "" }, "All conferences"),
+    confs.map((c) => h("option", { value: c, selected: c === store.conf ? true : null }, c)));
+}
+
 function logo(abbr, size = "") {
   const m = meta(abbr);
   if (m.logo) {
@@ -88,12 +112,12 @@ function logo(abbr, size = "") {
 }
 
 function fallbackLogo(abbr, size) {
-  return h("span", { class: `logo logo-fallback ${size}`, style: { background: meta(abbr).color }, "aria-hidden": "true" }, abbr);
+  return h("span", { class: `logo logo-fallback ${size}`, style: { background: meta(abbr).color }, "aria-hidden": "true" }, code(abbr).slice(0, 4));
 }
 
 function teamLink(abbr, extra) {
-  return h("a", { href: `/team/${abbr}`, "data-link": true, class: "team-cell" }, logo(abbr),
-    h("span", {}, h("span", { class: "name" }, abbr), extra ? h("div", { class: "coach" }, extra) : null));
+  return h("a", { href: teamPath(abbr), "data-link": true, class: "team-cell" }, logo(abbr),
+    h("span", {}, h("span", { class: "name" }, tname(abbr)), extra ? h("div", { class: "coach" }, extra) : null));
 }
 
 /* ---------- tooltip ---------- */
@@ -324,11 +348,11 @@ function scatterChart(opts) {
     const order = [...opts.teams].sort((a, b) => (a.team === selected) - (b.team === selected));
     for (const t of order) {
       const cx = x(t.x), cy = y(t.y), ring = opts.ring ? opts.ring(t.team) : null;
-      const g = s("g", { class: `team-dot ${selected && selected !== t.team ? "dim" : ""} ${ring || ""}`, tabindex: 0, role: "button", "aria-label": `${t.team}: ${signed(t.x)} Elo, ${signed(t.y)} V-City` },
+      const g = s("g", { class: `team-dot ${selected && selected !== t.team ? "dim" : ""} ${ring || ""}`, tabindex: 0, role: "button", "aria-label": `${tname(t.team)}: ${signed(t.x)} Elo, ${signed(t.y)} V-City` },
         s("circle", { class: "dot-bg", cx, cy, r: 15 }));
       const lg = meta(t.team).logo;
       g.append(lg ? s("image", { href: lg, x: cx - 11, y: cy - 11, width: 22, height: 22 })
-        : s("text", { class: "dot-abbr", x: cx, y: cy + 3.5, "text-anchor": "middle" }, t.team));
+        : s("text", { class: "dot-abbr", x: cx, y: cy + 3.5, "text-anchor": "middle" }, code(t.team).slice(0, 4)));
       const show = (evt) => tip.show(evt.clientX != null ? evt : { clientX: g.getBoundingClientRect().right, clientY: g.getBoundingClientRect().top }, () => opts.tip(t.team));
       g.addEventListener("pointermove", show);
       g.addEventListener("pointerleave", () => tip.hide());
@@ -391,8 +415,24 @@ function renderChrome() {
 
   const sel = $("#team-select");
   if (sel.options.length <= 1) {
-    for (const abbr of Object.keys(sm.teams).sort()) sel.append(h("option", { value: abbr }, `${abbr} · ${sm.teams[abbr].short}`));
+    if (college()) {
+      for (const team of sm.ratings.map((r) => r.team).sort((a, b) => tname(a).localeCompare(tname(b)))) sel.append(h("option", { value: team }, tname(team)));
+    } else {
+      for (const abbr of Object.keys(sm.teams).sort()) sel.append(h("option", { value: abbr }, `${abbr} · ${sm.teams[abbr].short}`));
+    }
   }
+  const tag = $("#league-tag");
+  if (tag) { tag.textContent = league().name; tag.hidden = false; }
+  const sw = $("#league-switch");
+  if (sw && sm.siblings && sm.siblings.length) {
+    sw.replaceChildren(...sm.siblings.map((x) => {
+      const here = x.label.toLowerCase() === league().key || x.label === league().name;
+      return h("a", { href: x.url, class: here ? "current" : null, "aria-current": here ? "page" : null }, x.label);
+    }));
+    sw.hidden = false;
+  }
+  const credit = $("#data-credit");
+  if (credit && college()) credit.textContent = `Data: sportsdataverse (cfbfastR) college play-by-play since ${sm.first_season} and ESPN (live, provisional). FBS teams are rated; every FCS opponent shares one rating.`;
   renderSlate();
 }
 
@@ -410,13 +450,13 @@ function renderSlate() {
   slate.replaceChildren(...games.map((g) => {
     const fav = g.home_win_prob >= 0.5 ? [g.home_team, g.home_win_prob] : [g.away_team, 1 - g.home_win_prob];
     const done = g.state !== "pre";
-    const row = (abbr, score, win) => h("div", { class: `slate-row ${win ? "winner" : ""}` }, logo(abbr), h("span", { class: "abbr" }, abbr), done ? h("span", { class: "score" }, fmt0(score)) : null);
+    const row = (abbr, score, win) => h("div", { class: `slate-row ${win ? "winner" : ""}` }, logo(abbr), h("span", { class: "abbr" }, code(abbr)), done ? h("span", { class: "score" }, fmt0(score)) : null);
     return h("a", { class: `slate-card ${g.state === "in" ? "is-live" : ""}`, href: `/game/${g.game_id}`, "data-link": true },
       row(g.away_team, g.away_score, done && g.away_score > g.home_score),
       row(g.home_team, g.home_score, done && g.home_score > g.away_score),
       h("div", { class: "slate-meta" },
         h("span", {}, g.state === "in" ? h("span", { class: "badge live" }, "Live") : null, " ", gameStatus(g)),
-        g.home_win_prob != null ? h("span", {}, `${fav[0]} ${pct(fav[1])}`) : null));
+        g.home_win_prob != null ? h("span", {}, `${code(fav[0])} ${pct(fav[1])}`) : null));
   }));
 }
 
@@ -445,7 +485,7 @@ function viewRatings(app, params) {
   const source = store.scope === "season" ? sm.ratings_season : sm.ratings;
   const anyLive = source.some((r) => Math.abs(r.live_change || 0) >= 0.05);
   let sortKey = params.get("sort") || "net", sortDir = -1;  // -1 = high to low
-  const rows = [...source];
+  const rows = source.filter((r) => inConf(r.team));
   const sortBy = (key) => {
     if (key === sortKey) sortDir = -sortDir;
     else { sortKey = key; sortDir = key === "team" ? 1 : -1; }
@@ -466,7 +506,7 @@ function viewRatings(app, params) {
   table.append(thead, tbody);
 
   function draw() {
-    rows.sort((a, b) => sortKey === "team" ? sortDir * a.team.localeCompare(b.team)
+    rows.sort((a, b) => sortKey === "team" ? sortDir * tname(a.team).localeCompare(tname(b.team))
       : sortDir * ((a[k(sortKey)] ?? -1e9) - (b[k(sortKey)] ?? -1e9)));
     thead.replaceChildren(h("tr", {},
       h("th", {}, "#"),
@@ -478,7 +518,7 @@ function viewRatings(app, params) {
     tbody.replaceChildren(...rows.map((r, i) => {
       const net = r[k("net")];
       const w = (Math.abs(net) / (maxAbs || 1)) * 42;
-      return h("tr", { class: "row-link", onclick: (e) => { if (!e.target.closest("a")) go(`/team/${r.team}`); } },
+      return h("tr", { class: "row-link", onclick: (e) => { if (!e.target.closest("a")) go(teamPath(r.team)); } },
         h("td", { class: "rank" }, r[k("net_rank")]),
         h("td", { class: "left" }, teamLink(r.team, r.head_coach)),
         h("td", { class: "num" }, h("span", { class: "net-bar" },
@@ -504,12 +544,12 @@ function viewRatings(app, params) {
       h("div", {}, h("h1", {}, "Power ratings"),
         h("div", { class: "sub" }, store.scope === "season"
           ? `This season only: every team started ${sm.status.through.season} at 1500. Through week ${sm.status.through.week}.`
-          : `Offense and defense Elo from every run, pass and punt since ${sm.first_season}. Through ${sm.status.through.season} week ${sm.status.through.week}.`)),
-      h("div", { class: "head-tools" }, toggles(() => render({ keepScroll: true })))),
+          : `Offense and defense Elo from every run, pass and punt since ${sm.first_season}${college() ? ", for every FBS team" : ""}. Through ${sm.status.through.season} week ${sm.status.through.week}.`)),
+      h("div", { class: "head-tools" }, confFilter(() => render({ keepScroll: true })), toggles(() => render({ keepScroll: true })))),
     h("div", { class: "tiles" },
-      tile("Top team", h("span", {}, logo(top.team, "md"), " ", top.team, " ", signed(top[k("net")])), `${signed(top[k("spread")])} pts vs an average team`, "hero"),
-      tile("Best offense", h("span", {}, logo(bestO.team, "md"), " ", bestO.team), `${fmt1(bestO[k("off")])} Elo`),
-      tile("Best defense", h("span", {}, logo(bestD.team, "md"), " ", bestD.team), `${fmt1(bestD[k("def")])} Elo`),
+      tile("Top team", h("span", {}, logo(top.team, "md"), " ", tname(top.team), " ", signed(top[k("net")])), `${signed(top[k("spread")])} pts vs an average team`, "hero"),
+      tile("Best offense", h("span", {}, logo(bestO.team, "md"), " ", tname(bestO.team)), `${fmt1(bestO[k("off")])} Elo`),
+      tile("Best defense", h("span", {}, logo(bestD.team, "md"), " ", tname(bestD.team)), `${fmt1(bestD[k("def")])} Elo`),
       tile("Picks the winner", `${met.game_pick_pct.toFixed(1)}%`, `${met.games.toLocaleString()} games since ${met.from_season} · home team wins ${met.home_win_pct.toFixed(1)}%`)),
     h("div", { class: "card" },
       h("div", { class: "table-wrap" }, table),
@@ -521,7 +561,7 @@ function viewRatings(app, params) {
 
 async function viewTeam(app, abbr, params) {
   setNav("");
-  const data = await api(`/api/team/${abbr}?variant=${setKey()}`);
+  const data = await api(`/api/team/${encodeURIComponent(abbr)}?variant=${setKey()}`);
   const m = data.meta || meta(abbr);
   const cur = data.current;
   const hist = data.history.map((g) => ({ ...g, off: g.off_post - 1500, def: g.def_post - 1500, coach: g.coach_post - 1500 }));
@@ -545,12 +585,12 @@ async function viewTeam(app, abbr, params) {
     const pts = rangePoints();
     const oneSeason = new Set(pts.map((p) => p.season)).size === 1;
     const xMarks = (ps) => {
-      if (oneSeason) return ps.map((p, i) => ({ i, label: isPlayoff(p.season, p.week) ? (champion(p.season) && champion(p.season).game_id === p.game_id ? "SB" : "P") : `W${p.week}`, minGap: 26 }));
+      if (oneSeason) return ps.map((p, i) => ({ i, label: isPlayoff(p.season, p.week) ? (champion(p.season) && champion(p.season).game_id === p.game_id ? (college() ? "NC" : "SB") : "P") : `W${p.week}`, minGap: 26 }));
       const marks = [];
       ps.forEach((p, i) => { if (i === 0 || p.season !== ps[i - 1].season) marks.push({ i, label: `${p.season}${wonTitle(abbr, p.season) ? " 🏆" : lostTitle(abbr, p.season) ? " 🥈" : ""}`, major: true, minGap: 40 }); });
       return marks;
     };
-    const title = (p) => `${p.season} ${weekName(p.season, p.week)}${isSuperBowl(p) ? (wonTitle(abbr, p.season) ? " 🏆" : " 🥈") : ""} · ${p.home ? "vs" : "@"} ${p.opponent} · ${p.points_for > p.points_against ? "W" : p.points_for < p.points_against ? "L" : "T"} ${fmt0(p.points_for)}–${fmt0(p.points_against)}${p.provisional ? " · live" : ""}`;
+    const title = (p) => `${p.season} ${weekName(p.season, p.week)}${isTitleGame(p) ? (wonTitle(abbr, p.season) ? " 🏆" : " 🥈") : ""} · ${p.home ? "vs" : "@"} ${tname(p.opponent)} · ${p.points_for > p.points_against ? "W" : p.points_for < p.points_against ? "L" : "T"} ${fmt0(p.points_for)}–${fmt0(p.points_against)}${p.provisional ? " · live" : ""}`;
     chartBox.replaceChildren(
       h("div", { class: "chart-head" },
         h("div", {}, h("h2", {}, "Ratings over time"), h("p", { class: "card-sub", style: { margin: 0 } }, "Elo above average after each game. Click a point to open the game.")),
@@ -559,19 +599,19 @@ async function viewTeam(app, abbr, params) {
             [...seasons].reverse().map((y) => h("option", { value: y, selected: range === "1" && y === chartSeason ? true : null }, y))),
           seg([["1", "Season"], ["5", "5 yrs"], ["10", "10 yrs"], ["all", `All (${seasons[0]}–)`]], range, (v) => { range = v; drawCharts(); }))),
       lineChart({
-        points: pts, zero: true, height: 300, ariaLabel: `${abbr} offense, defense and net ratings over time`,
+        points: pts, zero: true, height: 300, ariaLabel: `${tname(abbr)} offense, defense and net ratings over time`,
         series: [{ key: "net", label: "Net", color: "var(--series-3)" }, { key: "off", label: "Offense", color: "var(--series-1)" }, { key: "def", label: "Defense", color: "var(--series-2)" }],
         yFormat: (v, step) => signed(v, step < 1 ? 1 : 0), tipFormat: (v) => signed(v), xMarks, title,
-        marks: (ps) => ps.map((p, i) => ({ i, p })).filter(({ p }) => isSuperBowl(p)).map(({ i, p }) => wonTitle(abbr, p.season)
-          ? { i, key: "net", title: `${p.season}: won the Super Bowl` }
-          : { i, key: "net", cls: "silver", title: `${p.season}: Super Bowl runner-up` }),
+        marks: (ps) => ps.map((p, i) => ({ i, p })).filter(({ p }) => isTitleGame(p)).map(({ i, p }) => wonTitle(abbr, p.season)
+          ? { i, key: "net", title: `${p.season}: won the ${titlePrize()}` }
+          : { i, key: "net", cls: "silver", title: `${p.season}: ${titlePrize()} runner-up` }),
         onClick: (p) => go(`/game/${p.game_id}`),
       }));
     coachBox.replaceChildren(
       h("h2", {}, "Coaching staff ⚠"),
       h("p", { class: "card-sub" }, "Penalties, two-point tries and early timeouts."),
       lineChart({
-        points: pts, zero: true, height: 160, legend: false, endLabels: false, ariaLabel: `${abbr} coaching rating over time`,
+        points: pts, zero: true, height: 160, legend: false, endLabels: false, ariaLabel: `${tname(abbr)} coaching rating over time`,
         series: [{ key: "coach", label: "Coach", color: "var(--series-1)" }],
         yFormat: (v, step) => signed(v, step < 1 ? 1 : 0), tipFormat: (v) => signed(v), xMarks: (ps) => xMarksCoarse(ps), title,
       }),
@@ -597,9 +637,9 @@ async function viewTeam(app, abbr, params) {
         h("tbody", {}, games.map((g) => {
           const d = g.net - g.net_pre;
           const res = g.points_for > g.points_against ? "W" : g.points_for < g.points_against ? "L" : "T";
-          return h("tr", { class: "row-link", onclick: () => go(`/game/${g.game_id}`) },
-            h("td", { class: "left" }, weekName(g.season, g.week), isSuperBowl(g) ? [" ", res === "W" ? trophy() : silver()] : null, g.provisional ? h("span", { class: "badge prov", style: { marginLeft: "6px" } }, "live") : null),
-            h("td", { class: "left" }, h("span", { class: "team-cell" }, h("span", { class: "muted" }, g.home ? "vs" : "@"), logo(g.opponent), g.opponent)),
+          return h("tr", { class: "row-link", onclick: (e) => { if (!e.target.closest("a")) go(`/game/${g.game_id}`); } },
+            h("td", { class: "left" }, weekName(g.season, g.week), isTitleGame(g) ? [" ", res === "W" ? trophy() : silver()] : null, g.provisional ? h("span", { class: "badge prov", style: { marginLeft: "6px" } }, "live") : null),
+            h("td", { class: "left" }, h("a", { class: "team-cell", href: teamPath(g.opponent), "data-link": true }, h("span", { class: "muted" }, g.home ? "vs" : "@"), logo(g.opponent), tname(g.opponent))),
             h("td", { class: "num" }, h("span", { class: `res-badge res-${res}` }, res), " ", `${fmt0(g.points_for)}–${fmt0(g.points_against)}`),
             h("td", { class: "num" }, signed(g.off)), h("td", { class: "num" }, signed(g.def)), h("td", { class: "num" }, h("strong", {}, signed(g.net))),
             h("td", { class: `num ${d > 0 ? "delta-up" : d < 0 ? "delta-down" : "muted"}` }, signed(d)));
@@ -636,17 +676,19 @@ async function viewTeam(app, abbr, params) {
   app.replaceChildren(
     h("section", { class: "team-hero", style: { "--team": m.color, "--team-alt": m.alt } },
       h("div", { class: "title" }, logo(abbr, "lg"),
-        h("div", {}, h("h1", {}, m.name || abbr), h("div", { class: "sub" }, `${cur.head_coach || ""} · ${ordinal(cur.net_rank)} of 32 by net rating${store.scope === "season" ? " this season" : ""}`),
+        h("div", {}, h("h1", {}, m.name || abbr), h("div", { class: "sub" }, [cur.head_coach, cur.inactive
+          ? (abbr === "FCS" ? "Every FCS opponent shares this one rating" : "Not in the current ratings table")
+          : `${rk(cur.net_rank)} of ${data.rated_teams} by net rating${store.scope === "season" ? " this season" : ""}`].filter(Boolean).join(" · ")),
           h("div", { class: "hero-badges" },
-            titles.length ? h("div", { class: "titles" }, trophy(`${titles.length} Super Bowl${titles.length > 1 ? "s" : ""} since ${store.summary.first_season}`),
-              `Super Bowl champions: ${titles.join(", ")}`) : null,
+            titles.length ? h("div", { class: "titles" }, trophy(`${titles.length} ${titlePrize()}${titles.length > 1 ? "s" : ""} since ${store.summary.first_season}`),
+              `${college() ? "National" : "Super Bowl"} champions: ${titles.join(", ")}`) : null,
             losses.length ? h("div", { class: "titles silver" }, silver(), `Runner-up: ${losses.join(", ")}`) : null)),
         h("div", { class: "head-tools" }, toggles(() => render({ keepScroll: true })))),
       h("div", { class: "tiles" },
-        tile("Net", signed(cur.net), `${ordinal(cur.net_rank)} · ${signed(cur.spread)} pts vs average`, "hero"),
-        tile("Offense", fmt1(cur.off), `${ordinal(cur.off_rank)} · wins ${fmt1(cur.off_win_pct)}% of plays · V-City big plays ${signed(cur.v_off)} (${ordinal(cur.v_off_rank)})`),
-        tile("Defense", fmt1(cur.def), `${ordinal(cur.def_rank)} · wins ${fmt1(cur.def_win_pct)}% of plays · V-City havoc ${signed(cur.v_def)} (${ordinal(cur.v_def_rank)})`),
-        tile("Coach ⚠", fmt1(cur.coach), `${ordinal(cur.coach_rank)} · it will suck`))),
+        tile("Net", signed(cur.net), cur.inactive ? `${signed(cur.spread)} pts vs average` : `${rk(cur.net_rank)} · ${signed(cur.spread)} pts vs average`, "hero"),
+        tile("Offense", fmt1(cur.off), cur.inactive ? null : `${rk(cur.off_rank)} · wins ${fmt1(cur.off_win_pct)}% of plays · V-City big plays ${signed(cur.v_off)} (${rk(cur.v_off_rank)})`),
+        tile("Defense", fmt1(cur.def), cur.inactive ? null : `${rk(cur.def_rank)} · wins ${fmt1(cur.def_win_pct)}% of plays · V-City havoc ${signed(cur.v_def)} (${rk(cur.v_def_rank)})`),
+        tile("Coach ⚠", fmt1(cur.coach), cur.inactive ? "it will suck" : `${rk(cur.coach_rank)} · it will suck`))),
     h("div", { class: "card" }, chartBox),
     h("div", { class: "grid-2" },
       h("div", { class: "card" }, logBox),
@@ -656,14 +698,14 @@ async function viewTeam(app, abbr, params) {
         h("div", { class: "card" }, h("h2", {}, "Seasons"),
           h("div", { class: "table-wrap", style: { maxHeight: "420px", overflowY: "auto" } }, h("table", {},
             h("thead", {}, h("tr", {}, h("th", { class: "left" }, "Season"), h("th", {}, "Record"), h("th", {}, "Net"), h("th", {}, "Off"), h("th", {}, "Def"))),
-            h("tbody", {}, seasonRows.map((r) => h("tr", { class: `row-link ${wonTitle(abbr, r.season) ? "champ" : lostTitle(abbr, r.season) ? "runner-up" : ""}`, title: wonTitle(abbr, r.season) ? "Won the Super Bowl · chart this season" : lostTitle(abbr, r.season) ? "Super Bowl runner-up · chart this season" : "Chart this season", onclick: () => { pickSeason(r.season); chartBox.scrollIntoView({ behavior: "smooth", block: "start" }); } },
+            h("tbody", {}, seasonRows.map((r) => h("tr", { class: `row-link ${wonTitle(abbr, r.season) ? "champ" : lostTitle(abbr, r.season) ? "runner-up" : ""}`, title: wonTitle(abbr, r.season) ? `Won the ${titlePrize()} · chart this season` : lostTitle(abbr, r.season) ? `${titlePrize()} runner-up · chart this season` : "Chart this season", onclick: () => { pickSeason(r.season); chartBox.scrollIntoView({ behavior: "smooth", block: "start" }); } },
               h("td", { class: "left" }, r.season, wonTitle(abbr, r.season) ? [" ", trophy()] : lostTitle(abbr, r.season) ? [" ", silver()] : null),
               h("td", { class: "num" }, `${r.w}-${r.l}${r.t ? `-${r.t}` : ""}`),
-              h("td", { class: "num" }, h("strong", {}, signed(r.net)), h("span", { class: "rk" }, ordinal(r.net_rank))),
-              h("td", { class: "num" }, signed(r.off_post - 1500), h("span", { class: "rk" }, ordinal(r.off_post_rank))),
-              h("td", { class: "num" }, signed(r.def_post - 1500), h("span", { class: "rk" }, ordinal(r.def_post_rank))))))))))),
+              h("td", { class: "num" }, h("strong", {}, signed(r.net)), r.net_rank != null ? h("span", { class: "rk" }, ordinal(r.net_rank)) : null),
+              h("td", { class: "num" }, signed(r.off_post - 1500), r.off_post_rank != null ? h("span", { class: "rk" }, ordinal(r.off_post_rank)) : null),
+              h("td", { class: "num" }, signed(r.def_post - 1500), r.def_post_rank != null ? h("span", { class: "rk" }, ordinal(r.def_post_rank)) : null))))))))),
   );
-  document.title = `${abbr} · VeloCITY`;
+  document.title = `${tname(abbr)} · ${site()}`;
 }
 
 async function viewGames(app, params) {
@@ -683,12 +725,12 @@ async function viewGames(app, params) {
     const upset = final && ((favHome && awayWon) || (!favHome && homeWon));
     const side = (abbr, score, won, lost) => h("div", { class: `side ${lost ? "loser" : ""}` }, logo(abbr, "md"), h("span", { class: "tname" }, meta(abbr).short || abbr), h("span", { class: "score" }, final ? fmt0(score) : ""));
     return h("a", { class: "game-card", href: `/game/${g.game_id}`, "data-link": true },
-      h("div", { class: "slate-meta" }, h("span", {}, g.location === "Neutral" ? "Neutral site" : `at ${g.home_team}`),
+      h("div", { class: "slate-meta" }, h("span", {}, g.location === "Neutral" ? "Neutral site" : `at ${tname(g.home_team)}`),
         h("span", {}, g.provisional ? h("span", { class: "badge prov" }, "Live data") : null, upset ? h("span", { class: "badge upset" }, "Upset") : null,
-          isSuperBowl(g) ? h("span", { class: "champ-tag" }, "🏆 Super Bowl") : null)),
+          isTitleGame(g) ? h("span", { class: "champ-tag" }, `🏆 ${titleGame()}`) : null)),
       h("div", { class: "teams" }, side(g.away_team, g.away_score, awayWon, final && homeWon), side(g.home_team, g.home_score, homeWon, final && awayWon)),
-      probBar(g.away_team, 1 - g.home_win_prob, g.home_team),
-      h("div", { class: "prob-labels" }, h("span", {}, "Pregame chance"), h("span", {}, `Spread ${favHome ? g.home_team : g.away_team} ${signed(-Math.abs(g.home_spread))}`)));
+      probBar(code(g.away_team), 1 - g.home_win_prob, code(g.home_team)),
+      h("div", { class: "prob-labels" }, h("span", {}, "Pregame chance"), h("span", {}, `Spread ${code(favHome ? g.home_team : g.away_team)} ${signed(-Math.abs(g.home_spread))}`)));
   });
 
   app.replaceChildren(
@@ -696,7 +738,7 @@ async function viewGames(app, params) {
       h("div", {}, h("h1", {}, `${season} ${weekName(season, data.week)}`), h("div", { class: "sub" }, "Pregame chances come from the ratings going into each game.")),
       h("div", { class: "head-tools" }, seasonSel, weekSel)),
     cards.length ? h("div", { class: "games-grid" }, cards) : h("div", { class: "empty" }, "No games."));
-  document.title = `${season} ${weekName(season, data.week)} · VeloCITY`;
+  document.title = `${season} ${weekName(season, data.week)} · ${site()}`;
 }
 
 async function viewGame(app, gameId) {
@@ -759,13 +801,13 @@ async function viewGame(app, gameId) {
       rows.push(h("tr", { class: isCoach ? "coach-row" : "" },
         h("td", { class: "clock" }, e.time || ""),
         h("td", { class: "dd" }, dd),
-        h("td", { class: "off" }, h("span", { class: "team-cell", title: isCoach ? `${e.att_team} staff vs ${e.def_team} staff` : `${e.att_team} offense vs ${e.def_team} defense` }, logo(e.att_team))),
+        h("td", { class: "off" }, h("span", { class: "team-cell", title: isCoach ? `${tname(e.att_team)} staff vs ${tname(e.def_team)} staff` : `${tname(e.att_team)} offense vs ${tname(e.def_team)} defense` }, logo(e.att_team))),
         h("td", { class: "desc" }, isCoach ? `Coaching · ${cleanDesc(e.desc)}` : cleanDesc(e.desc)),
         h("td", { class: "chance" }, h("div", { class: "split" },
-          h("div", { class: "split-bar", role: "img", "aria-label": `${e.att_team} ${pct(e.p)} to win the ${isCoach ? "event" : "play"}` },
+          h("div", { class: "split-bar", role: "img", "aria-label": `${tname(e.att_team)} ${pct(e.p)} to win the ${isCoach ? "event" : "play"}` },
             h("span", { style: { flex: Math.max(0.03, e.p), background: color(e.att_team) } }), h("span", { style: { flex: Math.max(0.03, 1 - e.p), background: color(e.def_team) } })),
-          h("div", { class: "split-labels" }, h("span", {}, `${e.att_team} ${pct(e.p)}`), h("span", {}, `${pct(1 - e.p)} ${e.def_team}`)))),
-        h("td", { class: "res" }, h("span", { class: `res-badge res-${res}`, title: `${e.att_team} ${res === "W" ? "won" : res === "T" ? "tied" : "lost"}` }, res), ...marks),
+          h("div", { class: "split-labels" }, h("span", {}, `${code(e.att_team)} ${pct(e.p)}`), h("span", {}, `${pct(1 - e.p)} ${code(e.def_team)}`)))),
+        h("td", { class: "res" }, h("span", { class: `res-badge res-${res}`, title: `${tname(e.att_team)} ${res === "W" ? "won" : res === "T" ? "tied" : "lost"}` }, res), ...marks),
         h("td", { class: `elo ${e.delta > 0 ? "delta-up" : e.delta < 0 ? "delta-down" : "muted"}` }, signed(e.delta, 2))));
     }
     tbody.replaceChildren(...rows);
@@ -785,31 +827,31 @@ async function viewGame(app, gameId) {
     h("div", { class: "card", style: { marginTop: "18px" } },
       h("div", { class: "slate-meta", style: { marginBottom: "10px" } },
         h("span", {}, `${g.season} ${weekName(g.season, g.week)} · ${g.game_date}${g.location === "Neutral" ? " · neutral site" : ""}`,
-          isSuperBowl(g) ? [" · ", trophy(`${champion(g.season).team} won the Super Bowl`), ` ${champion(g.season).team} champions · `,
-            silver(), ` ${champion(g.season).runner_up} runner-up`] : null),
+          isTitleGame(g) ? [" · ", trophy(`${tname(champion(g.season).team)} won the ${titlePrize()}`), ` ${tname(champion(g.season).team)} champions · `,
+            silver(), ` ${tname(champion(g.season).runner_up)} runner-up`] : null),
         h("span", {}, isLive ? h("span", { class: "badge live" }, "Live") : null, " ", data.provisional ? h("span", { class: "badge prov" }, "Provisional · ESPN feed") : null)),
       h("div", { class: "scoreboard" },
-        h("a", { class: "side", href: `/team/${away}`, "data-link": true }, logo(away, "lg"), h("div", {}, h("div", { class: "tname" }, meta(away).short || away), h("div", { class: "muted" }, "Away")), h("span", { class: "big" }, fmt0(as))),
+        h("a", { class: "side", href: teamPath(away), "data-link": true }, logo(away, "lg"), h("div", {}, h("div", { class: "tname" }, meta(away).short || away), h("div", { class: "muted" }, "Away")), h("span", { class: "big" }, fmt0(as))),
         h("div", { class: "mid" }, slate && slate.state !== "post" ? gameStatus(slate) : "Final"),
-        h("a", { class: "side home", href: `/team/${home}`, "data-link": true }, h("span", { class: "big" }, fmt0(hs)), h("div", {}, h("div", { class: "tname" }, meta(home).short || home), h("div", { class: "muted" }, "Home")), logo(home, "lg"))),
-      h("div", { style: { marginTop: "14px" } }, h("div", { class: "card-sub", style: { margin: "0 0 4px" } }, "Pregame chance to win"), probBar(away, 1 - g.home_win_prob, home))),
+        h("a", { class: "side home", href: teamPath(home), "data-link": true }, h("span", { class: "big" }, fmt0(hs)), h("div", {}, h("div", { class: "tname" }, meta(home).short || home), h("div", { class: "muted" }, "Home")), logo(home, "lg"))),
+      h("div", { style: { marginTop: "14px" } }, h("div", { class: "card-sub", style: { margin: "0 0 4px" } }, "Pregame chance to win"), probBar(code(away), 1 - g.home_win_prob, code(home)))),
     h("div", { class: "tiles" },
-      tile(`${away} offense`, `${pct(offWins(away))}`, `of plays won · expected ${pct(expected(away))}`),
-      tile(`${home} offense`, `${pct(offWins(home))}`, `of plays won · expected ${pct(expected(home))}`),
-      tile("Play swing", h("span", {}, logo(leader(homeSwing), "md"), ` ${leader(homeSwing)} ${signed(Math.abs(homeSwing))}`), "net Elo taken from the other team"),
-      tile("Staff swing ⚠", h("span", {}, logo(leader(staffSwing), "md"), ` ${leader(staffSwing)} ${signed(Math.abs(staffSwing))}`), "coaching Elo from penalties, timeouts, 2-pt tries")),
+      tile(`${code(away)} offense`, `${pct(offWins(away))}`, `of plays won · expected ${pct(expected(away))}`),
+      tile(`${code(home)} offense`, `${pct(offWins(home))}`, `of plays won · expected ${pct(expected(home))}`),
+      tile("Play swing", h("span", {}, logo(leader(homeSwing), "md"), ` ${code(leader(homeSwing))} ${signed(Math.abs(homeSwing))}`), "net Elo taken from the other team"),
+      tile("Staff swing ⚠", h("span", {}, logo(leader(staffSwing), "md"), ` ${code(leader(staffSwing))} ${signed(Math.abs(staffSwing))}`), "coaching Elo from penalties, timeouts, 2-pt tries")),
     h("div", { class: "grid-2" },
       h("div", { class: "card" },
         h("h2", {}, "Rating swing"),
-        h("p", { class: "card-sub" }, "Net Elo (offense + defense) moving between the teams, play by play. It's zero-sum, so one line: up is " + home + ", down is " + away + ". Hover for the play."),
+        h("p", { class: "card-sub" }, "Net Elo (offense + defense) moving between the teams, play by play. It's zero-sum, so one line: up is " + tname(home) + ", down is " + tname(away) + ". Hover for the play."),
         lineChart({
           points: swing, zero: true, symmetric: true, height: 240, legend: false, endLabels: false, ariaLabel: "Net rating swing through the game",
           series: [{ key: "swing", label: "Swing", color: "var(--ink-2)" }],
-          fillZero: { above: "var(--series-1)", below: "var(--series-2)", upLabel: `${home} gaining`, downLabel: `${away} gaining` },
+          fillZero: { above: "var(--series-1)", below: "var(--series-2)", upLabel: `${code(home)} gaining`, downLabel: `${code(away)} gaining` },
           yFormat: (v, step) => signed(Math.abs(v), step < 1 ? 1 : 0),
-          tipRows: (p) => [[p.swing >= 0 ? "var(--series-1)" : "var(--series-2)", signed(Math.abs(p.swing), 2), `${leader(p.swing)} ahead on the swing`]],
+          tipRows: (p) => [[p.swing >= 0 ? "var(--series-1)" : "var(--series-2)", signed(Math.abs(p.swing), 2), `${code(leader(p.swing))} ahead on the swing`]],
           xMarks: (ps) => { const mk = []; ps.forEach((p, i) => { if (p.e && (i === 1 || (ps[i - 1].e && p.e.qtr !== ps[i - 1].e.qtr))) mk.push({ i, label: p.e.qtr >= 5 ? "OT" : `Q${p.e.qtr}`, major: true, minGap: 30 }); }); return mk; },
-          title: (p) => (p.e ? `${ordinal(p.e.qtr)} ${p.e.time || ""} · ${p.e.att_team} ball · ${pct(p.e.p)} to win` : "Kickoff"),
+          title: (p) => (p.e ? `${ordinal(p.e.qtr)} ${p.e.time || ""} · ${code(p.e.att_team)} ball · ${pct(p.e.p)} to win` : "Kickoff"),
           extra: (p) => (p.e ? h("div", { class: "tt-desc" }, cleanDesc(p.e.desc)) : null),
         })),
       h("div", { class: "card" }, h("h2", {}, "Ratings in → out"),
@@ -823,7 +865,7 @@ async function viewGame(app, gameId) {
         h("div", { class: "range" }, seg([["plays", "Plays"], ["all", "Plays + coaching"]], "plays", (v) => { showCoach = v === "all"; drawPlays(); }))),
       h("div", { class: "table-wrap" }, h("table", { class: "plays" }, tbody))),
   );
-  document.title = `${away} @ ${home} · VeloCITY`;
+  document.title = `${code(away)} @ ${code(home)} · ${site()}`;
   if (isLive) store.timers.push(setTimeout(async () => { await loadSummary().catch(() => {}); render({ keepScroll: true }); }, 30000));
 }
 
@@ -831,34 +873,35 @@ async function viewSeason(app, year) {
   setNav("season");
   const sm = store.summary;
   const data = await api(`/api/season/${year || sm.status.through.season}?variant=${setKey()}`);
-  const all = data.teams.flatMap((t) => t.points.map((p) => p.net));
+  const shown = data.teams.filter((t) => inConf(t.team));
+  const all = shown.flatMap((t) => t.points.map((p) => p.net));
   const domain = [Math.min(0, ...all), Math.max(0, ...all)];
   const sel = h("select", { class: "select", "aria-label": "Season", onchange: (e) => go(`/season/${e.target.value}`) },
     [...data.seasons].reverse().map((y) => h("option", { value: y, selected: y === data.season ? true : null }, y)));
   const champ = data.champion && data.champion.team;
   const second = data.champion && data.champion.runner_up;
-  const cards = data.teams.map((t, i) => h("div", { class: `multiple ${t.team === champ ? "champ" : t.team === second ? "runner-up" : ""}` },
-    h("a", { class: "multiple-head", href: `/team/${t.team}?season=${data.season}`, "data-link": true },
-      h("span", { class: "rank" }, i + 1), logo(t.team), h("strong", {}, t.team),
+  const cards = shown.map((t) => h("div", { class: `multiple ${t.team === champ ? "champ" : t.team === second ? "runner-up" : ""}` },
+    h("a", { class: "multiple-head", href: `${teamPath(t.team)}?season=${data.season}`, "data-link": true },
+      h("span", { class: "rank" }, data.teams.indexOf(t) + 1), logo(t.team), h("strong", {}, tname(t.team)),
       h("span", { class: "muted" }, `${t.w}-${t.l}${t.t ? `-${t.t}` : ""}`),
       t.team === champ ? h("span", { class: "champ-tag" }, "🏆 Champion") : null,
       t.team === second ? h("span", { class: "champ-tag silver" }, "🥈 Runner-up") : null,
       h("span", { class: "multiple-net num" }, signed(t.net))),
     lineChart({
       points: t.points, compact: true, legend: false, endLabels: false, zero: true, yDomain: domain, height: 96,
-      ariaLabel: `${t.team} net rating through ${data.season}`,
+      ariaLabel: `${tname(t.team)} net rating through ${data.season}`,
       series: [{ key: "net", label: "Net", color: "var(--series-3)" }],
       yFormat: (v) => signed(v, 0), tipFormat: (v) => signed(v),
-      title: (p) => `${weekName(data.season, p.week)} · ${p.home ? "vs" : "@"} ${p.opponent} · ${p.points_for > p.points_against ? "W" : p.points_for < p.points_against ? "L" : "T"} ${fmt0(p.points_for)}–${fmt0(p.points_against)}`,
+      title: (p) => `${weekName(data.season, p.week)} · ${p.home ? "vs" : "@"} ${tname(p.opponent)} · ${p.points_for > p.points_against ? "W" : p.points_for < p.points_against ? "L" : "T"} ${fmt0(p.points_for)}–${fmt0(p.points_against)}`,
       onClick: (p) => go(`/game/${p.game_id}`),
     })));
   app.replaceChildren(
     h("div", { class: "page-head" },
-      h("div", {}, h("h1", {}, `${data.season} season`, champ ? h("span", { class: "titles", style: { marginLeft: "12px", verticalAlign: "middle" } }, trophy(), `${champ} beat ${second} ${data.champion.score} in the Super Bowl`) : null),
+      h("div", {}, h("h1", {}, `${data.season} season`, champ ? h("span", { class: "titles", style: { marginLeft: "12px", verticalAlign: "middle" } }, trophy(), `${tname(champ)} beat ${tname(second)} ${data.champion.score} in the ${titleGame()}`) : null),
         h("div", { class: "sub" }, `Every team's net rating (offense + defense above average) after each game, on one shared scale. Sorted by where they finished.${store.scope === "season" ? " This season only: everyone starts at 0." : ""}`)),
-      h("div", { class: "head-tools" }, sel, toggles(() => render({ keepScroll: true })))),
+      h("div", { class: "head-tools" }, confFilter(() => render({ keepScroll: true })), sel, toggles(() => render({ keepScroll: true })))),
     h("div", { class: "multiples" }, cards));
-  document.title = `${data.season} season · VeloCITY`;
+  document.title = `${data.season} season · ${site()}`;
 }
 
 const QUADRANT_VIEWS = [
@@ -891,7 +934,7 @@ async function viewChart(app, params) {
     const rx = rankOf(v.x), ry = rankOf(v.y);
     const quad = (t) => (t[v.x] >= 0 ? (t[v.y] >= 0 ? v.quadrants.tr : v.quadrants.br) : (t[v.y] >= 0 ? v.quadrants.tl : v.quadrants.bl));
     const chart = scatterChart({
-      teams: data.teams.map((t) => ({ team: t.team, x: t[v.x], y: t[v.y] })),
+      teams: data.teams.filter((t) => inConf(t.team)).map((t) => ({ team: t.team, x: t[v.x], y: t[v.y] })),
       xLabel: v.xLabel, yLabel: v.yLabel, quadrants: v.quadrants, ring,
       trail: (team) => byTeam[team].points.map((p) => ({ x: p[v.x], y: p[v.y], label: weekName(data.season, p.week) })),
       tip: (team) => {
@@ -905,7 +948,7 @@ async function viewChart(app, params) {
     const table = h("details", { class: "chart-table" }, h("summary", {}, "Show as a table"),
       h("div", { class: "table-wrap" }, h("table", {},
         h("thead", {}, h("tr", {}, h("th", { class: "left" }, "Team"), h("th", {}, "Elo"), h("th", {}, "V-City"), h("th", { class: "left" }, "Quadrant"))),
-        h("tbody", {}, [...data.teams].sort((a, b) => b[v.x] - a[v.x]).map((t) => h("tr", {},
+        h("tbody", {}, data.teams.filter((t) => inConf(t.team)).sort((a, b) => b[v.x] - a[v.x]).map((t) => h("tr", {},
           h("td", { class: "left" }, teamLink(t.team)),
           h("td", { class: "num" }, signed(t[v.x]), h("span", { class: "rk" }, ordinal(rx[t.team]))),
           h("td", { class: "num" }, signed(t[v.y]), h("span", { class: "rk" }, ordinal(ry[t.team]))),
@@ -916,10 +959,10 @@ async function viewChart(app, params) {
   app.replaceChildren(
     h("div", { class: "page-head" },
       h("div", {}, h("h1", {}, "Elo × V-City"),
-        h("div", { class: "sub" }, `Elo rewards consistency: winning down after down, sustained drives, stingy defense. V-City (${VCITY}) rewards the plays Elo can't see: big chunks on offense, sacks and takeaways on defense. Ratings after ${data.season === sm.status.through.season ? "the latest game" : `the ${data.season} season`}; 0 is league average. Gold and silver rings mark that season's Super Bowl teams.`)),
-      h("div", { class: "head-tools" }, sel, toggles(() => render({ keepScroll: true })))),
+        h("div", { class: "sub" }, `Elo rewards consistency: winning down after down, sustained drives, stingy defense. V-City (${VCITY}) rewards the plays Elo can't see: big chunks on offense, sacks and takeaways on defense. Ratings after ${data.season === sm.status.through.season ? "the latest game" : `the ${data.season} season`}; 0 is league average. Gold and silver rings mark that season's ${titleGame()} teams.`)),
+      h("div", { class: "head-tools" }, confFilter(() => render({ keepScroll: true })), sel, toggles(() => render({ keepScroll: true })))),
     ...cards);
-  document.title = `Elo × V-City ${data.season} · VeloCITY`;
+  document.title = `Elo × V-City ${data.season} · ${site()}`;
 }
 
 function describeThreshold(t) {
@@ -974,7 +1017,7 @@ function viewRules(app) {
               : `Between seasons, offense and defense ratings are pulled ${Math.round(m.season_regression * 100)}% of the way back to average (coaching ${Math.round(m.coach_regression * 100)}%).`),
             h("li", {}, `"No garbage time" drops plays when the offense's win chance is below ${Math.round(m.garbage_wp[0] * 100)}% or above ${Math.round(m.garbage_wp[1] * 100)}%.`))))),
   );
-  document.title = "Rules · VeloCITY";
+  document.title = `Rules · ${site()}`;
 }
 
 // Glossary entries: [term, definition]. Definitions can be functions of the current settings and
@@ -996,11 +1039,13 @@ function glossarySections(sm) {
       ["Net", "Offense plus defense, each measured above the league average. The headline rating on the board."],
       ["Spread", `Net rating turned into points: how much better than an average team on a neutral field (about ${met.pts_per_100_elo.toFixed(0)} points per 100 Elo). On the board +7 means 7 points better; on game cards it's written like a betting line, so −4.5 means favored by 4.5.`],
       ["Off / Def win %", "Share of plays won this season, ties counting half. Raw numbers, not adjusted for opponents; the ratings are."],
-      ["Rank", "Position among the 32 teams for that rating (1st is best)."],
+      ["Rank", `Position among the ${sm.ratings.length} rated teams for that rating (1st is best).`],
       ["Pregame chance", "The chance a team wins a game, from the ratings going into it and home field."],
       ["Picks the winner", `How often the higher-rated team (counting home field) won, since ${met.from_season}: ${met.game_pick_pct.toFixed(1)}%. Always picking the home team wins ${met.home_win_pct.toFixed(1)}%.`],
       ["Coaching staff rating ⚠", "Elo for each team's staff, from penalties, two-point tries and early timeouts. Disclaimer: it will suck. Players commit the penalties and these events are a thin slice of coaching."],
-      ["Head coach", "The current head coach from ESPN (nflverse's coach names can lag a change)."],
+      ["Head coach", college() ? "The current head coach from ESPN." : "The current head coach from ESPN (nflverse's coach names can lag a change)."],
+      ...(college() ? [["FCS", "Every opponent outside FBS shares one rating, \"FCS\". It plays a few games a week against FBS teams, so it's rated like a team but left out of the table and ranks."],
+        ["Conference", "The conference filter on the board, seasons and charts uses each school's current conference."]] : []),
     ]],
     ["V-City", [
       ["V-City", "Volatile Chunks & Impressive Turnovers, Y'know. The second rating, for the boom-or-bust plays Elo can't see. Rated the same way as Elo: opponent-adjusted and against what the situation predicts."],
@@ -1013,12 +1058,12 @@ function glossarySections(sm) {
       ["K", `The most a rating can move on one event: ${m.k} per play (times the play's weight), ${m.k_vcity} per V-City play, ${m.k_coach} per coaching event.`],
       ["Weights (×1.5, ×2)", `Plays that matter more move ratings more: red-zone snaps ×${r.weights.red_zone}, goal to go ×${r.weights.goal_to_go}, field-goal attempts ×${r.weights.field_goal}. Set by the situation before the snap, never the result.`],
       ["Off-season pull", `Between seasons, ratings are pulled part of the way back toward 1500: offense and defense ${pct(m.season_regression)}, coaching ${pct(m.coach_regression)}, V-City ${pct(m.vcity_regression)}.`],
-      ["Decay / carryover", m.decay
+      ["Decay / carryover", m.decay && !college()
         ? "Since 2014 each team's off-season pull depends on what changed: returning snaps, lineup age and a new head coach. Team pages show how much of each rating carried over (\"kept\")."
         : "Team-specific decay is off: every team gets the same off-season pull."],
       ["Full history / This season only", "Full history carries ratings across seasons. This season only restarts every team at 1500 each season, so it shows the current year on its own."],
       ["Garbage time", `Plays when the offense's chance to win the game is below ${pct(m.garbage_wp[0])} or above ${pct(m.garbage_wp[1])}. The No garbage time toggle drops them.`],
-      ["Provisional / live", "Ratings from games in progress, scored from ESPN's live feed. They're replaced by the official nflverse data after the game."],
+      ["Provisional / live", `Ratings from games in progress, scored from ESPN's live feed. They're replaced by the ${college() ? "sportsdataverse" : "official nflverse"} data after the game.`],
     ]],
     ["Charts", [
       ["Rating swing", "On a game page: net Elo moving between the two teams, play by play. It's zero-sum, so it's one line; up is the home team gaining."],
@@ -1029,7 +1074,7 @@ function glossarySections(sm) {
       ["Small multiples", "The Seasons page: every team's net rating through one season, each in its own small chart on a shared scale."],
     ]],
     ["Symbols & badges", [
-      ["🏆 / 🥈", "Super Bowl champion / runner-up. Gold and silver rows, rings and outlines mark the same thing."],
+      ["🏆 / 🥈", `${college() ? "National" : "Super Bowl"} champion / runner-up. Gold and silver rows, rings and outlines mark the same thing.`],
       ["💥", "A big play: at least a quarter of full big-play credit."],
       ["⚡", "Havoc: a sack, tackle for loss or takeaway worth at least a quarter of full credit."],
       ["×1.5 / ×2", "A weighted play (red zone, goal to go or field goal)."],
@@ -1038,7 +1083,8 @@ function glossarySections(sm) {
       ["⚠", "The coaching rating. See the disclaimer."],
     ]],
     ["Data", [
-      ["nflverse", "Official play-by-play back to 1999, plus snap counts and rosters for decay. Rebuilt every morning in season."],
+      college() ? ["sportsdataverse", `College play-by-play (cfbfastR) and schedules back to ${sm.first_season}, every game with an FBS team. Rebuilt every morning in season.`]
+        : ["nflverse", "Official play-by-play back to 1999, plus snap counts and rosters for decay. Rebuilt every morning in season."],
       ["ESPN", "Live plays during games, team colors and logos, and current head coaches."],
       ["Source code", "VeloCITY is open source: github.com/BleeKelly/VeloCITY (linked from the GitHub icon at the top and the page footer)."],
     ]],
@@ -1069,10 +1115,10 @@ function viewGlossary(app) {
   draw();
   app.replaceChildren(
     h("div", { class: "page-head" },
-      h("div", {}, h("h1", {}, "Glossary"), h("div", { class: "sub" }, "What every number, chart and badge on VeloCITY means. Numbers here follow the current settings.")),
+      h("div", {}, h("h1", {}, "Glossary"), h("div", { class: "sub" }, `What every number, chart and badge on ${site()} means. Numbers here follow the current settings.`)),
       h("div", { class: "head-tools" }, filter)),
     body);
-  document.title = "Glossary · VeloCITY";
+  document.title = `Glossary · ${site()}`;
   if (location.hash) {
     const target = document.getElementById(location.hash.slice(1));
     if (target) requestAnimationFrame(() => target.scrollIntoView({ block: "center" }));
@@ -1086,7 +1132,7 @@ function viewNotFound(app) {
     h("p", {}, "If this page should exist, your browser may be running an older copy of VeloCITY. Reload to get the latest."),
     h("p", {}, h("button", { type: "button", class: "btn", onclick: () => location.reload() }, "Reload"), " ",
       h("a", { href: "/", "data-link": true, class: "btn ghost" }, "Go to ratings"))));
-  document.title = "Not found · VeloCITY";
+  document.title = `Not found · ${site()}`;
 }
 
 function viewPreview(app, g) {
@@ -1094,11 +1140,11 @@ function viewPreview(app, g) {
     h("div", { class: "card", style: { marginTop: "18px" } },
       h("div", { class: "slate-meta", style: { marginBottom: "10px" } }, h("span", {}, `${g.season} week ${g.week} · kickoff ${gameStatus(g)}`)),
       h("div", { class: "scoreboard" },
-        h("a", { class: "side", href: `/team/${g.away_team}`, "data-link": true }, logo(g.away_team, "lg"), h("div", { class: "tname" }, meta(g.away_team).short)),
+        h("a", { class: "side", href: teamPath(g.away_team), "data-link": true }, logo(g.away_team, "lg"), h("div", { class: "tname" }, meta(g.away_team).short)),
         h("div", { class: "mid" }, "Not started"),
-        h("a", { class: "side home", href: `/team/${g.home_team}`, "data-link": true }, h("div", { class: "tname" }, meta(g.home_team).short), logo(g.home_team, "lg"))),
-      h("div", { style: { marginTop: "14px" } }, h("div", { class: "card-sub", style: { margin: "0 0 4px" } }, "Chance to win from today's ratings"), probBar(g.away_team, 1 - g.home_win_prob, g.home_team)),
-      h("p", { class: "card-sub", style: { margin: "12px 0 0" } }, `Spread: ${g.home_win_prob >= 0.5 ? g.home_team : g.away_team} ${signed(-Math.abs(g.home_spread))}. Play-by-play chances appear here once the game kicks off.`)));
+        h("a", { class: "side home", href: teamPath(g.home_team), "data-link": true }, h("div", { class: "tname" }, meta(g.home_team).short), logo(g.home_team, "lg"))),
+      h("div", { style: { marginTop: "14px" } }, h("div", { class: "card-sub", style: { margin: "0 0 4px" } }, "Chance to win from today's ratings"), probBar(code(g.away_team), 1 - g.home_win_prob, code(g.home_team))),
+      h("p", { class: "card-sub", style: { margin: "12px 0 0" } }, `Spread: ${code(g.home_win_prob >= 0.5 ? g.home_team : g.away_team)} ${signed(-Math.abs(g.home_spread))}. Play-by-play chances appear here once the game kicks off.`)));
 }
 
 /* ---------- router ---------- */
@@ -1118,14 +1164,17 @@ async function render(opts = {}) {
   try {
     if (!store.summary) await loadSummary();
     app.classList.add("loading-fade");
-    if (parts[0] === "team" && parts[1]) await viewTeam(app, parts[1].toUpperCase(), url.searchParams);
+    if (parts[0] === "team" && parts[1]) {
+      const key = decodeURIComponent(parts[1]);
+      await viewTeam(app, college() ? key : key.toUpperCase(), url.searchParams);
+    }
     else if (parts[0] === "game" && parts[1]) await viewGame(app, parts[1]);
     else if (parts[0] === "games") await viewGames(app, url.searchParams);
     else if (parts[0] === "season") await viewSeason(app, parts[1] ? +parts[1] : null);
     else if (parts[0] === "rules") viewRules(app);
     else if (parts[0] === "chart") await viewChart(app, url.searchParams);
     else if (parts[0] === "glossary") viewGlossary(app);
-    else if (!parts.length) { viewRatings(app, url.searchParams); document.title = "VeloCITY"; }
+    else if (!parts.length) { viewRatings(app, url.searchParams); document.title = site(); }
     else viewNotFound(app);
     if (opts.keepScroll) scrollTo(0, scroll); else if (!opts.soft) scrollTo(0, 0);
   } catch (e) {
@@ -1139,7 +1188,7 @@ async function render(opts = {}) {
 function showBuilding(status) {
   $("#app").replaceChildren(h("div", { class: "building" }, h("div", { class: "spinner" }),
     h("strong", {}, "Building ratings…"),
-    h("span", {}, status && status.error ? status.error : "Downloading play-by-play and scoring every play since 1999. This takes a minute or two the first time.")));
+    h("span", {}, status && status.error ? status.error : "Downloading play-by-play and scoring every play. This takes a few minutes the first time.")));
   $("#status-pill").textContent = "Building…";
   setTimeout(() => render(), 5000);
 }
@@ -1169,7 +1218,7 @@ document.addEventListener("click", (e) => {
 });
 window.addEventListener("popstate", () => render());
 window.addEventListener("scroll", () => tip.hide(), { passive: true });
-$("#team-select").addEventListener("change", (e) => { if (e.target.value) { go(`/team/${e.target.value}`); e.target.value = ""; } });
+$("#team-select").addEventListener("change", (e) => { if (e.target.value) { go(teamPath(e.target.value)); e.target.value = ""; } });
 $("#theme-toggle").addEventListener("click", () => {
   const root = document.documentElement;
   const dark = root.dataset.theme ? root.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
