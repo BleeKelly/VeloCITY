@@ -4,7 +4,8 @@ Two ports: the public site (ratings, teams, games) and an admin site for editing
 rules and model settings. Saving settings rescores every season in the background.
 
 History is rebuilt at startup and at REBUILD_HOURS each day (Eastern) from nflverse, or for college
-from sportsdataverse (see league.py). While games are on, ESPN's live feed is polled and the
+from sportsdataverse (see league.py). Rebuilds run in the background and swap in when they finish, and
+the last finished build is saved to disk, so a restart serves it right away while it rebuilds. While games are on, ESPN's live feed is polled and the
 history ratings are carried forward through the live plays; those are provisional until the
 game shows up in the history files.
 """
@@ -16,7 +17,9 @@ import hmac
 import json
 import math
 import os
+import pickle
 import re
+import shutil
 import threading
 import time
 import traceback
@@ -218,9 +221,27 @@ def slim_events(events: Events, p: np.ndarray, delta: np.ndarray) -> pd.DataFram
 
 
 @lru_cache(maxsize=8)
-def season_events(season: int, built_at: str) -> pd.DataFrame:
-    """One season of rated events, read from disk (built_at busts the cache after a rebuild)."""
-    return pd.read_parquet(EVENTS_DIR / f"{season}.parquet")
+def season_events(season: int, build: str) -> pd.DataFrame:
+    """One season of rated events, read from that build's folder on disk."""
+    return pd.read_parquet(EVENTS_DIR / build / f"{season}.parquet")
+
+
+BUILD_DIR = re.compile(r"[0-9a-f]{12}")  # events/<build revision>/
+
+
+def prune_events(keep: set[str]) -> None:
+    """Remove event folders from older builds (and the flat files older versions wrote)."""
+    if not EVENTS_DIR.is_dir():
+        return
+    for f in EVENTS_DIR.iterdir():
+        if f.is_dir() and BUILD_DIR.fullmatch(f.name) and f.name not in keep:
+            shutil.rmtree(f, ignore_errors=True)
+        elif f.is_file() and re.fullmatch(r"\d{4}\.parquet", f.name):
+            f.unlink(missing_ok=True)
+
+
+def snapshot_file() -> Path:
+    return data.OUTPUT_DIR / "snapshot.pkl"
 
 
 class State:
@@ -296,11 +317,14 @@ class State:
             del pbp
             write_outputs(runs, data.OUTPUT_DIR)
 
+            # Each build writes its game-page events to its own folder, so pages keep reading the build
+            # being served until the new one swaps in.
+            rev = hashlib.sha1(f"{datetime.now().isoformat()}|{id(runs)}".encode()).hexdigest()[:12]
             run = runs["all"]
             events = slim_events(run.events, run.result.p, run.result.delta)
-            EVENTS_DIR.mkdir(parents=True, exist_ok=True)
+            (EVENTS_DIR / rev).mkdir(parents=True, exist_ok=True)
             for season, part in events.groupby("season"):
-                part.drop(columns="season").to_parquet(EVENTS_DIR / f"{season}.parquet", index=False)
+                part.drop(columns="season").to_parquet(EVENTS_DIR / rev / f"{season}.parquet", index=False)
 
             snap = {}
             for name, r in runs.items():
@@ -320,13 +344,15 @@ class State:
                 title_ids = title_games(tuple(seasons))
             champions = super_bowls(snap["all"].games, title_ids)
             with self.lock:
+                previous = self.build_revision
                 self.snap = snap
                 self.champions = champions
                 self._live_print = None
-                self.revision = hashlib.sha1(f"{datetime.now().isoformat()}|{id(snap)}".encode()).hexdigest()[:12]
-                self.build_revision = self.revision
+                self.revision = self.build_revision = rev
                 self.status.update(built_at=datetime.now(live.EASTERN).isoformat(timespec="seconds"), error=None)
-            print(f"rebuilt through {snap['all'].games.iloc[-1]['game_id']}")
+            print(f"rebuilt through {snap['all'].games.iloc[-1]['game_id']}", flush=True)
+            self.save_snapshot()
+            prune_events({rev, previous})
             self.refresh_live()
         except Exception as e:
             traceback.print_exc()
@@ -380,7 +406,59 @@ class State:
                 self._live_print = fingerprint
                 self.revision = hashlib.sha1(f"{self.revision}|{fingerprint}".encode()).hexdigest()[:12]
 
+    # ---- warm start -------------------------------------------------------------------------
+
+    def save_snapshot(self) -> None:
+        """Keep the build being served on disk, for the next start."""
+        payload = {"league": LEAGUE.key, "snap": self.snap, "champions": self.champions,
+                   "teams_meta": self.teams_meta, "coaches": self.coaches, "build": self.build_revision,
+                   "built_at": self.status["built_at"]}
+        path = snapshot_file()
+        tmp = path.with_suffix(".tmp")
+        try:
+            with open(tmp, "wb") as f:
+                pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
+            tmp.replace(path)
+        except OSError as e:
+            print(f"could not save the build for a warm start: {e}")
+
+    def warm_start(self) -> bool:
+        """Serve the last saved build right away, if it loads and every view works with this version
+        of the code; the startup rebuild then replaces it."""
+        try:
+            with open(snapshot_file(), "rb") as f:
+                payload = pickle.load(f)  # our own file, written by save_snapshot
+        except FileNotFoundError:
+            return False
+        except Exception as e:  # an older format or library version: build from scratch
+            print(f"saved build not usable ({e.__class__.__name__}); building from scratch")
+            return False
+        if payload.get("league") != LEAGUE.key:
+            return False
+        with self.lock:
+            self.snap, self.champions = payload["snap"], payload["champions"]
+            self.teams_meta, self.coaches = payload["teams_meta"], payload["coaches"]
+            self.revision = self.build_revision = payload["build"]
+            self.status.update(built_at=payload["built_at"], building=True)
+        try:  # every view once, so a build saved by older code can't break pages
+            all_games = self.snap["all"].games
+            self.summary()
+            self.team(self.snap["all"].table["team"].iloc[0], "all")
+            self.season(int(all_games["season"].max()), "all")
+            self.games(int(all_games["season"].max()), None)
+            self.game(all_games["game_id"].iloc[-1])
+            self.widget()
+        except Exception as e:
+            print(f"saved build doesn't fit this version ({e.__class__.__name__}: {e}); building from scratch")
+            with self.lock:
+                self.snap, self.champions, self.revision, self.build_revision = {}, {}, "0", "0"
+                self.status.update(built_at=None)
+            return False
+        print(f"serving the saved build from {payload['built_at']} while rebuilding", flush=True)
+        return True
+
     def loop(self) -> None:
+        self.warm_start()
         self.rebuild()
         last_rebuild = (datetime.now(live.EASTERN).date(), datetime.now(live.EASTERN).hour)
         while True:
@@ -558,7 +636,7 @@ class State:
         if game_id in set(snap.games["game_id"]):
             info = snap.games[snap.games["game_id"] == game_id]
             season = int(info["season"].iloc[0])
-            ev = season_events(season, self.status["built_at"])
+            ev = season_events(season, self.build_revision)
             ev = ev[ev["game_id"] == game_id]
             provisional = False
         elif live_games is not None and game_id in set(live_games["game_id"]):

@@ -155,12 +155,18 @@ Changing a port there changes both the container's listener and the published po
 
 Ratings board (sortable both ways; full history or this season only; all plays or no garbage
 time), team pages (ratings over time for any single season or 5/10/all years, game log,
-off-season carryover, coaching chart), Seasons (all 32 teams as small multiples on one scale),
+off-season carryover, coaching chart), Seasons (every team as small multiples on one scale),
 games by week with pregame chances, every game play by play with each side's chance to win
 the play, the result, weighted plays and big-play/havoc markers, and a zero-sum rating swing
 chart, the Elo × V-City charts for any season, a Rules page showing the scoring rules
 currently in effect, and a Glossary of every term, chart and badge (filterable, with links to each
 entry, and numbers that follow the current settings). Live games update every ~45 s.
+
+Visitors never wait on a rebuild. The 6 and 12 ET rebuilds and rule changes run in the background
+and swap in when they finish (the status pill says "Rescoring…" meanwhile). Each finished build is
+saved to `output/snapshot.pkl`, so after a restart (a deploy, an image update, a reboot) the site
+serves that build within seconds while it rebuilds. If the saved build doesn't work with new code,
+the site builds from scratch instead.
 
 JSON API: `/api/summary`, `/api/team/{abbr}?variant=`, `/api/season/{year}?variant=`,
 `/api/games?season=&week=`, `/api/game/{game_id}`, `/api/widget`, `/api/status`.

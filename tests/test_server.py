@@ -144,3 +144,26 @@ def test_public_http_cache_headers_and_overlay(built):
         assert code == 404 and h["Cache-Control"] == server.CACHE_MISS
     finally:
         httpd.shutdown()
+
+
+def test_restart_serves_the_saved_build_while_rebuilding(built):
+    from velocity import server
+    from velocity.config import PlayConfig
+    from velocity.settings import Settings
+
+    state, pbp = built
+    assert server.snapshot_file().exists()
+    fresh = server.State(PlayConfig(), Settings(decay=False), rebuild_hours=[], live_enabled=False)
+    assert fresh.warm_start()
+    assert fresh.build_revision == state.build_revision and fresh.status["built_at"] == state.status["built_at"]
+    assert fresh.summary()["ratings"] == state.summary()["ratings"]
+    assert fresh.game(pbp["game_id"].iloc[-1])["events"]
+
+    # Each build has its own events folder; only the one being served and the one before are kept.
+    state.rebuild(refresh=False)
+    state.rebuild(refresh=False)
+    folders = sorted(p.name for p in server.EVENTS_DIR.iterdir())
+    assert len(folders) == 2 and state.build_revision in folders
+
+    server.snapshot_file().write_bytes(b"not a pickle")
+    assert not server.State(PlayConfig(), Settings(decay=False), rebuild_hours=[], live_enabled=False).warm_start()
