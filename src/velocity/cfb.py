@@ -80,7 +80,7 @@ def _fetch(url: str, path: Path, refresh: bool, season: int | None) -> Path:
     tmp = path.with_suffix(".part")
     print(f"downloading {path.name}...")
     req = urllib.request.Request(url, headers={"User-Agent": "velocity"})
-    with urllib.request.urlopen(req) as resp, open(tmp, "wb") as f:
+    with urllib.request.urlopen(req, timeout=60) as resp, open(tmp, "wb") as f:
         while chunk := resp.read(1 << 20):
             f.write(chunk)
     tmp.replace(path)

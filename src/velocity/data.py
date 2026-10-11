@@ -68,7 +68,7 @@ def download(season: int | None, refresh: bool = False, release: str = "pbp", na
     url = URL.format(release=release, name=name, season=season) if season is not None else \
         f"https://github.com/nflverse/nflverse-data/releases/download/{release}/{fname}"
     req = urllib.request.Request(url, headers={"User-Agent": "velocity"})
-    with urllib.request.urlopen(req) as resp, open(tmp, "wb") as f:
+    with urllib.request.urlopen(req, timeout=60) as resp, open(tmp, "wb") as f:
         while chunk := resp.read(1 << 20):
             f.write(chunk)
     tmp.replace(path)

@@ -265,7 +265,7 @@ class State:
         self.teams_meta: dict[str, dict] = {}
         self.coaches: dict[str, str] = {}
         self.champions: dict[int, dict] = {}
-        self.status = {"built_at": None, "live_at": None, "building": False, "error": None}
+        self.status = {"built_at": None, "live_at": None, "building": False, "error": None, "live_error": None}
 
     # ---- settings -------------------------------------------------------------------------
 
@@ -387,16 +387,24 @@ class State:
                 self.summary_cache[g["espn_id"]] = rows
             frames.append(rows)
 
+        # A game can be "in" before its first snap: no plays yet, or only a kickoff, which rates nothing.
+        frames = [f for f in frames if len(f)]
         results, live_events = {}, pd.DataFrame()
         if frames:
-            pbp = pd.concat([f for f in frames if len(f)], ignore_index=True)
-            for name, snap in self.snap.items():
-                ev = prepare(pbp, snap.play_cfg, baseline=snap.events.baseline, teams=snap.events.teams)
-                res = run_elo(ev, snap.elo_cfg, start=snap.state)
-                results[name] = {"state": res.state, "games": game_predictions(ev, res, snap.metrics),
-                                 "history": game_history(ev, res)}
-                if name == "all":
-                    live_events = slim_events(ev, res.p, res.delta)
+            pbp = pd.concat(frames, ignore_index=True)
+            try:
+                for name, snap in self.snap.items():
+                    ev = prepare(pbp, snap.play_cfg, baseline=snap.events.baseline, teams=snap.events.teams)
+                    if not len(ev.games):
+                        continue
+                    res = run_elo(ev, snap.elo_cfg, start=snap.state)
+                    results[name] = {"state": res.state, "games": game_predictions(ev, res, snap.metrics),
+                                     "history": game_history(ev, res)}
+                    if name == "all":
+                        live_events = slim_events(ev, res.p, res.delta)
+            except Exception:  # keep the last good live ratings; the scoreboard still updates
+                traceback.print_exc()
+                results, live_events = self.live, self.live_events
         fingerprint = json.dumps([[g["game_id"], g["state"], g["home_score"], g["away_score"], g["status"]] for g in board]
                                  + [len(live_events)], default=str)
         with self.lock:
@@ -462,12 +470,18 @@ class State:
         self.rebuild()
         last_rebuild = (datetime.now(live.EASTERN).date(), datetime.now(live.EASTERN).hour)
         while True:
-            now = datetime.now(live.EASTERN)
-            if now.hour in self.rebuild_hours and (now.date(), now.hour) != last_rebuild:
-                last_rebuild = (now.date(), now.hour)
-                self.rebuild()
-            else:
-                self.refresh_live()
+            # Nothing in one pass may end the loop: it's what keeps live games and rebuilds going.
+            try:
+                now = datetime.now(live.EASTERN)
+                if now.hour in self.rebuild_hours and (now.date(), now.hour) != last_rebuild:
+                    last_rebuild = (now.date(), now.hour)
+                    self.rebuild()
+                else:
+                    self.refresh_live()
+                    self.status["live_error"] = None
+            except Exception as e:
+                traceback.print_exc()
+                self.status["live_error"] = f"{datetime.now(live.EASTERN):%H:%M}: {e}"
             in_progress = any(g["state"] == "in" for g in self.scoreboard)
             time.sleep(LIVE_POLL_SECONDS if in_progress else IDLE_POLL_SECONDS)
 

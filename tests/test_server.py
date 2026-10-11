@@ -167,3 +167,39 @@ def test_restart_serves_the_saved_build_while_rebuilding(built):
 
     server.snapshot_file().write_bytes(b"not a pickle")
     assert not server.State(PlayConfig(), Settings(decay=False), rebuild_hours=[], live_enabled=False).warm_start()
+
+
+def test_live_survives_games_with_no_plays_yet(built, monkeypatch):
+    """A game ESPN marks in progress before its first snap (no plays, or only a kickoff) must not stop
+    live updates; 2026-10-11's London kickoff killed the live loop this way."""
+    from velocity import live, server
+
+    state, pbp = built
+    state.live_enabled = True
+    game = {"game_id": "2026_06_MIA_BUF", "espn_id": "401", "season": 2026, "week": 6, "kickoff": "2026-10-11T09:30:00-04:00",
+            "home_team": "BUF", "away_team": "MIA", "home_score": 0.0, "away_score": 0.0, "state": "in",
+            "status": "1st 15:00", "location": "Neutral", "season_type": "REG", "game_date": "2026-10-11"}
+    kickoff_only = pbp[pbp["game_id"] == pbp["game_id"].iloc[0]].head(1).assign(
+        game_id=game["game_id"], season=2026, week=6, play_type=None, down=float("nan"))
+    monkeypatch.setattr(live, "scoreboard", lambda: [game])
+    monkeypatch.setattr(live, "fetch_json", lambda url: {})
+    for rows in (pd.DataFrame(), kickoff_only):
+        monkeypatch.setattr(live, "summary_rows", lambda summary, coaches=None, rows=rows: rows.copy())
+        state.refresh_live()
+        assert state.scoreboard == [game] and state.status["live_at"]
+        assert state.summary()["scoreboard"][0]["state"] == "in"
+
+    # And whatever else goes wrong in a pass, the loop logs it and keeps going.
+    calls = []
+    def boom():
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("bad feed")
+        raise SystemExit  # stop the test loop on the second pass
+    monkeypatch.setattr(state, "refresh_live", boom)
+    monkeypatch.setattr(state, "rebuild", lambda refresh=True: None)
+    monkeypatch.setattr(state, "warm_start", lambda: False)
+    monkeypatch.setattr(server.time, "sleep", lambda s: None)
+    with pytest.raises(SystemExit):
+        state.loop()
+    assert len(calls) == 2 and "bad feed" in state.status["live_error"]
