@@ -14,7 +14,7 @@ dependencies = [
 velocity = "velocity.cli:main"
 
 [dependency-groups]
-dev = ["pytest>=8", "ruff>=0.6"]
+dev = ["pytest>=8", "ruff>=0.17.1"]
 
 [build-system]
 requires = ["hatchling"]
