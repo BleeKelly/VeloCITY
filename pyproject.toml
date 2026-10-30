@@ -5,7 +5,7 @@ description = "VeloCITY: play-by-play Elo ratings for NFL offenses, defenses and
 requires-python = ">=3.11"
 dependencies = [
     "numpy>=1.26",
-    "pandas>=2.2",
+    "pandas>=3.1.0",
     "pyarrow>=16",
     "tzdata",
 ]
